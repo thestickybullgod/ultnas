@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 mod commands;
-use commands::{add, daemon, init, inspect, integrity, ls, policy, purge, verify};
+use commands::{add, daemon, init, inspect, integrity, ls, policy, purge, track, verify};
 
 #[derive(Parser)]
 #[command(
@@ -42,6 +42,14 @@ enum Commands {
     Ls(ls::LsArgs),
     /// Remove records per policy or explicit ID
     Purge(purge::PurgeArgs),
+    /// Protect a live text file against invisible-character writes
+    Track(track::TrackArgs),
+    /// Stop protecting a file (its versions stay in the vault)
+    Untrack(track::FileArg),
+    /// Promote a tracked file's pending edit to its stable version
+    Approve(track::FileArg),
+    /// List tracked files and their status
+    Tracked,
     /// Policy operations
     #[command(subcommand)]
     Policy(policy::PolicyCommands),
@@ -68,6 +76,10 @@ fn main() -> Result<()> {
         Commands::Verify(args) => verify::run(&cli.vault, args),
         Commands::Ls(args) => ls::run(&cli.vault, args),
         Commands::Purge(args) => purge::run(&cli.vault, args),
+        Commands::Track(args) => track::track(&cli.vault, args),
+        Commands::Untrack(args) => track::untrack(&cli.vault, args),
+        Commands::Approve(args) => track::approve(&cli.vault, args),
+        Commands::Tracked => track::list(&cli.vault),
         Commands::Policy(cmd) => policy::run(&cli.vault, cmd),
         Commands::Integrity(cmd) => integrity::run(&cli.vault, cmd),
         Commands::Daemon(cmd) => daemon::run(cmd),

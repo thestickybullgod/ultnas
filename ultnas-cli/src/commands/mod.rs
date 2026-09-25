@@ -6,4 +6,5 @@ pub mod integrity;
 pub mod ls;
 pub mod policy;
 pub mod purge;
+pub mod track;
 pub mod verify;
