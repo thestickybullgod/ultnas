@@ -25,6 +25,37 @@ pub struct Vault {
 }
 
 impl Vault {
+    /// Where the vault lives when none is given (the CLI and daemon also
+    /// honour `$ULTNAS_VAULT` first): for root on Unix, `/var/lib/ultnas`;
+    /// otherwise the per-user data directory — `$XDG_DATA_HOME/ultnas` or
+    /// `~/.local/share/ultnas`, and `%LOCALAPPDATA%\ultnas` on Windows;
+    /// failing all of those, `./.ultnas`.
+    pub fn default_root() -> PathBuf {
+        #[cfg(unix)]
+        {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } == 0 {
+                return PathBuf::from("/var/lib/ultnas");
+            }
+            let var = |k| {
+                std::env::var_os(k)
+                    .filter(|v| !v.is_empty())
+                    .map(PathBuf::from)
+            };
+            if let Some(data) = var("XDG_DATA_HOME") {
+                return data.join("ultnas");
+            }
+            if let Some(home) = var("HOME") {
+                return home.join(".local").join("share").join("ultnas");
+            }
+        }
+        #[cfg(windows)]
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+            return PathBuf::from(local).join("ultnas");
+        }
+        PathBuf::from(".ultnas")
+    }
+
     /// Initialize a new vault at `root`. Fails if already a vault.
     pub fn init(root: &Path, name: &str) -> Result<Self, UltnasCoreError> {
         if root.join("vault.toml").exists() {

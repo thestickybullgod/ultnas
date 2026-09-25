@@ -15,6 +15,34 @@ fn help_and_verbose_flag_work() {
 }
 
 #[test]
+fn setup_creates_the_default_vault_and_commands_find_it() {
+    let env = Env::new();
+    env.write("home/.bashrc", "export A=1\n");
+    // No vault there yet: commands say how to get one.
+    env.ultnas_default(&["tracked"], None)
+        .assert_err("ultnas setup");
+
+    env.ultnas_default(&["setup", "--yes"], None)
+        .assert_ok()
+        .assert_has("Created vault");
+    assert!(env.default_vault().join("vault.toml").exists());
+    env.ultnas_default(&["tracked"], None)
+        .assert_ok()
+        .assert_has(".bashrc");
+}
+
+#[test]
+fn ultnas_vault_env_selects_the_vault() {
+    let env = Env::new();
+    let f = env.write("work/a.txt", "a\n");
+    env.ultnas_default(&["track", f.to_str().unwrap()], Some(&env.vault))
+        .assert_ok();
+    // The explicitly created test vault, not the default location.
+    env.ultnas(&["tracked"]).assert_has("a.txt");
+    assert!(!env.default_vault().exists());
+}
+
+#[test]
 fn init_refuses_an_existing_vault() {
     let env = Env::new();
     env.ultnas(&["init", "--name", "again"])

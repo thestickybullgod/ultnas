@@ -14,7 +14,7 @@ use std::{
     io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
 };
-use ultnas_core::{canonical_path, NamespacePath, Vault};
+use ultnas_core::{canonical_path, NamespacePath, UltnasCoreError, Vault};
 
 use super::track::{home, track_dir, track_one, DirOptions, Outcome};
 
@@ -241,7 +241,18 @@ fn show(items: &[Suggestion], chosen: &BTreeSet<usize>, home: Option<&Path>) {
 }
 
 pub fn run(vault_root: &Path, args: SetupArgs) -> Result<()> {
-    let vault = Vault::open(vault_root)?;
+    let vault = match Vault::open(vault_root) {
+        Ok(v) => v,
+        Err(UltnasCoreError::VaultNotFound(_)) if !args.list => {
+            let name = std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_else(|_| "ultnas".into());
+            let v = Vault::init(vault_root, &name)?;
+            println!("✓ Created vault `{name}` at {}\n", v.root().display());
+            v
+        }
+        Err(e) => return Err(e.into()),
+    };
     let home = home();
     let tracked: BTreeSet<PathBuf> = vault
         .tracked_files()?
@@ -335,7 +346,33 @@ pub fn run(vault_root: &Path, args: SetupArgs) -> Result<()> {
         }
     }
     println!("\nDone: {ok} set up, {failed} failed. `ultnas tracked` shows everything.");
+    print_start_hint(vault_root);
     Ok(())
+}
+
+/// How to start protecting, if a systemd service is how this machine does it.
+fn print_start_hint(vault_root: &Path) {
+    if !Path::new("/run/systemd/system").is_dir() {
+        println!(
+            "Start protecting: ultnasd --vault {} &",
+            vault_root.display()
+        );
+        return;
+    }
+    let default = Vault::default_root();
+    let custom = if vault_root == default {
+        String::new()
+    } else {
+        format!(
+            " (the service uses {}; set ULTNAS_VAULT in it for another vault)",
+            default.display()
+        )
+    };
+    if is_root() {
+        println!("Start protecting: systemctl enable --now ultnasd{custom}");
+    } else {
+        println!("Start protecting: systemctl --user enable --now ultnasd{custom}");
+    }
 }
 
 fn is_root() -> bool {

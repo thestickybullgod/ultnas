@@ -30,9 +30,10 @@ use services::{
     version
 )]
 struct Args {
-    /// Vault to guard (one daemon per vault)
-    #[arg(long, default_value = ".")]
-    vault: PathBuf,
+    /// Vault to guard, one daemon per vault [default: $ULTNAS_VAULT, else
+    /// ~/.local/share/ultnas, or /var/lib/ultnas as root]
+    #[arg(long, env = "ULTNAS_VAULT")]
+    vault: Option<PathBuf>,
     /// Policy TOML (default: the vault manifest's `policy_path`, else built-in defaults)
     #[arg(long)]
     policy: Option<PathBuf>,
@@ -112,7 +113,13 @@ async fn main() -> Result<()> {
 
     // Open (and so validate) the vault before creating anything in it —
     // log directory or lock file — but lock before anything else can write.
-    let vault = Arc::new(Vault::open(&args.vault)?);
+    let vault_root = args.vault.clone().unwrap_or_else(Vault::default_root);
+    let vault = Arc::new(Vault::open(&vault_root).with_context(|| {
+        format!(
+            "no usable vault at {} (create one with `ultnas setup`)",
+            vault_root.display()
+        )
+    })?);
 
     let log_level = if args.verbose { "debug" } else { "info" };
     let log_dir = args
@@ -123,7 +130,7 @@ async fn main() -> Result<()> {
     // Flushes the log file when main returns.
     let _log_guard = logging::init(log_level, file)?;
 
-    info!("ultnasd starting — vault: {}", args.vault.display());
+    info!("ultnasd starting — vault: {}", vault_root.display());
     if !args.no_log_file {
         info!(
             "logging to {} (daily, keeping {} files)",
@@ -133,14 +140,14 @@ async fn main() -> Result<()> {
     }
 
     // Held until main returns; the OS also releases it if we crash.
-    let vault_lock = VaultLock::acquire(&args.vault)?;
+    let vault_lock = VaultLock::acquire(&vault_root)?;
     info!(
         "vault lock acquired: {} (PID {})",
         vault_lock.path().display(),
         std::process::id()
     );
 
-    let journal = Arc::new(Journal::open(&args.vault.join("journal.log"))?);
+    let journal = Arc::new(Journal::open(&vault_root.join("journal.log"))?);
 
     let policy = Arc::new(load_policy(args.policy.as_deref(), &vault)?);
     let ip = &policy.global.integrity;

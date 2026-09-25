@@ -3,6 +3,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
+use ultnas_core::{UltnasCoreError, Vault};
 
 mod commands;
 use commands::{add, daemon, init, inspect, integrity, ls, policy, purge, setup, track, verify};
@@ -16,9 +17,10 @@ use commands::{add, daemon, init, inspect, integrity, ls, policy, purge, setup, 
     arg_required_else_help = true
 )]
 struct Cli {
-    /// Path to the vault root (defaults to current directory)
-    #[arg(long, default_value = ".", global = true)]
-    vault: std::path::PathBuf,
+    /// Vault to use [default: $ULTNAS_VAULT, else ~/.local/share/ultnas,
+    /// or /var/lib/ultnas as root]
+    #[arg(long, env = "ULTNAS_VAULT", global = true)]
+    vault: Option<std::path::PathBuf>,
 
     /// Enable verbose logging
     #[arg(short, long, global = true)]
@@ -71,20 +73,31 @@ fn main() -> Result<()> {
         .with_env_filter(EnvFilter::new(log_level))
         .init();
 
-    match cli.command {
-        Commands::Init(args) => init::run(&cli.vault, args),
-        Commands::Add(args) => add::run(&cli.vault, args),
-        Commands::Inspect(args) => inspect::run(&cli.vault, args),
-        Commands::Verify(args) => verify::run(&cli.vault, args),
-        Commands::Ls(args) => ls::run(&cli.vault, args),
-        Commands::Purge(args) => purge::run(&cli.vault, args),
-        Commands::Setup(args) => setup::run(&cli.vault, args),
-        Commands::Track(args) => track::track(&cli.vault, args),
-        Commands::Untrack(args) => track::untrack(&cli.vault, args),
-        Commands::Approve(args) => track::approve(&cli.vault, args),
-        Commands::Tracked => track::list(&cli.vault),
-        Commands::Policy(cmd) => policy::run(&cli.vault, cmd),
-        Commands::Integrity(cmd) => integrity::run(&cli.vault, cmd),
-        Commands::Daemon(cmd) => daemon::run(&cli.vault, cmd),
-    }
+    let vault = cli.vault.unwrap_or_else(Vault::default_root);
+    let result = match cli.command {
+        Commands::Init(args) => init::run(&vault, args),
+        Commands::Add(args) => add::run(&vault, args),
+        Commands::Inspect(args) => inspect::run(&vault, args),
+        Commands::Verify(args) => verify::run(&vault, args),
+        Commands::Ls(args) => ls::run(&vault, args),
+        Commands::Purge(args) => purge::run(&vault, args),
+        Commands::Setup(args) => setup::run(&vault, args),
+        Commands::Track(args) => track::track(&vault, args),
+        Commands::Untrack(args) => track::untrack(&vault, args),
+        Commands::Approve(args) => track::approve(&vault, args),
+        Commands::Tracked => track::list(&vault),
+        Commands::Policy(cmd) => policy::run(&vault, cmd),
+        Commands::Integrity(cmd) => integrity::run(&vault, cmd),
+        Commands::Daemon(cmd) => daemon::run(&vault, cmd),
+    };
+    // Say how to get a vault, not just that there isn't one.
+    result.map_err(|e| match e.downcast_ref::<UltnasCoreError>() {
+        Some(UltnasCoreError::VaultNotFound(path)) => anyhow::anyhow!(
+            "no vault at {} — run `ultnas setup` to create one and choose what to \
+             protect (or `ultnas init --name <name>`; `--vault`/$ULTNAS_VAULT for \
+             another location)",
+            path.display()
+        ),
+        _ => e,
+    })
 }

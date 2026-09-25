@@ -95,6 +95,9 @@ impl Env {
         let mut cmd = Command::new(exe);
         cmd.env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
+            .env("LOCALAPPDATA", self.home.join("AppData").join("Local"))
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("ULTNAS_VAULT")
             .env_remove("RUST_LOG")
             .stdin(Stdio::null());
         cmd
@@ -110,6 +113,25 @@ impl Env {
             .output()
             .unwrap();
         Run::from(out)
+    }
+
+    /// Run `ultnas <args…>` without `--vault`, so the default location (or
+    /// `vault_env` as `$ULTNAS_VAULT`) applies.
+    pub fn ultnas_default(&self, args: &[&str], vault_env: Option<&Path>) -> Run {
+        let mut cmd = self.command(Path::new(env!("CARGO_BIN_EXE_ultnas")));
+        if let Some(v) = vault_env {
+            cmd.env("ULTNAS_VAULT", v);
+        }
+        Run::from(cmd.args(args).output().unwrap())
+    }
+
+    /// Where the default vault is under the fake home.
+    pub fn default_vault(&self) -> PathBuf {
+        if cfg!(windows) {
+            self.home.join("AppData").join("Local").join("ultnas")
+        } else {
+            self.home.join(".local").join("share").join("ultnas")
+        }
     }
 
     /// [`Env::ultnas`] with path arguments.
