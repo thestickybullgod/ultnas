@@ -1,6 +1,6 @@
 //! File-system watcher service.
 //!
-//! Each scan checks two things and forwards what it finds to `IntegrityGuard`:
+//! Checks two things and forwards what it finds to `IntegrityGuard`:
 //!
 //! - **Sealed records**: any object in the vault whose bytes no longer match
 //!   its ContentId.
@@ -10,14 +10,43 @@
 //!   deletes it, or replaces it with a symbolic link or other non-regular
 //!   file is a violation. Links are never followed.
 //!
-//! Current implementation: polling on a 30-second interval (stub).
-//! v0.3 will integrate the `notify` crate for true inotify/FSEvents/RDCW support.
+//! ## Events, with a full scan as backstop
+//! File-system events (inotify on Linux, FSEvents on macOS,
+//! ReadDirectoryChangesW on Windows, via `notify`) drive tracked-file checks:
+//! each write is inspected within milliseconds, so every attempt counts once.
 //!
-//! Each scan reads and hashes every sealed object and tracked file, so the
-//! whole scan — and the guard calls it makes — runs in `spawn_blocking`, off
-//! the async workers.
+//! - Each tracked file's *directory* is watched, not the file: restores and
+//!   editors replace files by rename, which would orphan a per-file watch.
+//! - The vault root (for `journal.log`: CLI quarantine lifts) and `tracked/`
+//!   (files tracked or untracked by the CLI) are watched too, so both apply
+//!   at once and the watch set follows the tracked set.
+//! - Events are batched over [`SETTLE`], so one save is one check.
+//! - Reads are ignored. The daemon's own reads would otherwise feed back
+//!   into events; its own writes do produce events, but re-checking a file
+//!   the daemon just repaired finds it unchanged.
+//!
+//! A full scan (every sealed object and tracked file) runs at start, every
+//! `full_scan_interval`, and whenever the OS reports dropped events. Sealed
+//! objects are only checked by full scans. If watching can't start at all,
+//! the service falls back to full scans every [`FALLBACK_POLL`].
+//!
+//! Checks hash files, so they — and the guard calls they make — run in
+//! `spawn_blocking`, off the async workers.
 
-use std::sync::{Arc, Mutex};
+use notify::{
+    event::{AccessKind, AccessMode},
+    Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use ultnas_core::{
     hash_bytes,
@@ -27,49 +56,271 @@ use ultnas_core::{
 
 use super::integrity_guard::{lock, IntegrityGuard, Target, Violation};
 
+/// How long to collect events after the first one before checking.
+pub const SETTLE: Duration = Duration::from_millis(50);
+/// Full-scan period when file-system events are unavailable.
+pub const FALLBACK_POLL: Duration = Duration::from_secs(30);
+/// Events buffered between batches; beyond this, a full scan replaces them.
+const EVENT_QUEUE: usize = 4096;
+
 pub struct WatcherService {
     vault: Arc<Vault>,
     guard: Arc<Mutex<IntegrityGuard>>,
     policy: Arc<Policy>,
-    poll_interval_s: u64,
+    full_scan_interval: Duration,
+}
+
+/// What one pass of the service checks.
+#[derive(Debug)]
+enum Job {
+    Full,
+    /// Paths named by a batch of events.
+    Paths(HashSet<PathBuf>),
+}
+
+/// Directories whose events the service interprets, in the form `notify`
+/// reports them (canonical, like tracked paths).
+#[derive(Clone)]
+struct Roots {
+    root: PathBuf,
+    tracked_dir: PathBuf,
 }
 
 impl WatcherService {
-    pub fn new(vault: Arc<Vault>, guard: Arc<Mutex<IntegrityGuard>>, policy: Arc<Policy>) -> Self {
+    pub fn new(
+        vault: Arc<Vault>,
+        guard: Arc<Mutex<IntegrityGuard>>,
+        policy: Arc<Policy>,
+        full_scan_interval: Duration,
+    ) -> Self {
         Self {
             vault,
             guard,
             policy,
-            poll_interval_s: 30,
+            full_scan_interval,
         }
     }
 
-    /// Main service loop. Polls for integrity violations.
+    /// Main service loop.
     pub async fn run(self) {
-        info!(
-            "WatcherService started (poll interval: {}s)",
-            self.poll_interval_s
-        );
-        let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(self.poll_interval_s));
+        let roots = match self.roots() {
+            Ok(roots) => Some(roots),
+            Err(e) => {
+                warn!(
+                    "WatcherService: can't resolve the vault's directories: {}",
+                    e
+                );
+                None
+            }
+        };
+        let (tx, mut rx) = mpsc::channel(EVENT_QUEUE);
+        let overflow = Arc::new(AtomicBool::new(false));
+        let mut watches = match roots.as_ref().map(|_| Watches::new(tx, overflow.clone())) {
+            Some(Ok(w)) => Some(w),
+            Some(Err(e)) => {
+                warn!("WatcherService: file-system events unavailable: {}", e);
+                None
+            }
+            None => None,
+        };
+        let period = if watches.is_some() {
+            info!(
+                "WatcherService started (file-system events; full scan every {}s)",
+                self.full_scan_interval.as_secs()
+            );
+            self.full_scan_interval
+        } else {
+            warn!(
+                "WatcherService started in polling mode (full scan every {}s)",
+                FALLBACK_POLL.as_secs()
+            );
+            FALLBACK_POLL
+        };
+
+        let mut interval = tokio::time::interval(period);
+        let mut known: HashSet<PathBuf> = HashSet::new();
         loop {
-            interval.tick().await;
-            debug!("WatcherService: scanning sealed records and tracked files");
+            let job = tokio::select! {
+                _ = interval.tick() => Job::Full,
+                Some(first) = rx.recv() => {
+                    tokio::time::sleep(SETTLE).await;
+                    let mut batch = vec![first];
+                    while let Ok(more) = rx.try_recv() {
+                        batch.push(more);
+                    }
+                    batch_job(batch, overflow.swap(false, Ordering::Relaxed))
+                }
+            };
+            debug!("WatcherService: {:?}", job);
+
             let (vault, guard, policy) =
                 (self.vault.clone(), self.guard.clone(), self.policy.clone());
-            if let Err(e) = tokio::task::spawn_blocking(move || scan(&vault, &guard, &policy)).await
-            {
-                error!("WatcherService: scan task panicked: {}", e);
+            let (prev, roots2) = (known.clone(), roots.clone());
+            let checked = tokio::task::spawn_blocking(move || {
+                run_job(&vault, &guard, &policy, job, &prev, roots2.as_ref())
+            })
+            .await;
+            match checked {
+                Ok(Some(tracked)) => {
+                    known = tracked;
+                    if let (Some(w), Some(r)) = (watches.as_mut(), roots.as_ref()) {
+                        w.sync(wanted_dirs(r, &known));
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => error!("WatcherService: check task panicked: {}", e),
+            }
+        }
+    }
+
+    fn roots(&self) -> std::io::Result<Roots> {
+        let root = std::fs::canonicalize(self.vault.root())?;
+        let tracked_dir = root.join("tracked");
+        std::fs::create_dir_all(&tracked_dir)?;
+        Ok(Roots { root, tracked_dir })
+    }
+}
+
+/// Turn one batch of watcher signals into a job.
+fn batch_job(batch: Vec<Signal>, overflowed: bool) -> Job {
+    let mut paths = HashSet::new();
+    for signal in batch {
+        match signal {
+            Signal::Rescan => return Job::Full,
+            Signal::Paths(p) => paths.extend(p),
+        }
+    }
+    if overflowed {
+        Job::Full
+    } else {
+        Job::Paths(paths)
+    }
+}
+
+/// Directories to watch: the vault root, `tracked/`, and every tracked
+/// file's parent.
+fn wanted_dirs(roots: &Roots, tracked: &HashSet<PathBuf>) -> HashSet<PathBuf> {
+    let mut dirs: HashSet<PathBuf> = tracked
+        .iter()
+        .filter_map(|p| p.parent().map(Path::to_path_buf))
+        .collect();
+    dirs.insert(roots.root.clone());
+    dirs.insert(roots.tracked_dir.clone());
+    dirs
+}
+
+enum Signal {
+    Paths(Vec<PathBuf>),
+    /// The OS dropped events, or the watcher hit an error: rescan everything.
+    Rescan,
+}
+
+/// The OS-level watches, kept in step with the tracked set.
+struct Watches {
+    inner: RecommendedWatcher,
+    dirs: HashSet<PathBuf>,
+}
+
+impl Watches {
+    fn new(tx: mpsc::Sender<Signal>, overflow: Arc<AtomicBool>) -> notify::Result<Self> {
+        let inner = notify::recommended_watcher(move |res: notify::Result<Event>| {
+            let signal = match res {
+                Ok(event) if event.need_rescan() => Signal::Rescan,
+                Ok(event) if !is_write(&event.kind) => return,
+                Ok(event) => Signal::Paths(event.paths),
+                Err(_) => Signal::Rescan,
+            };
+            if tx.try_send(signal).is_err() {
+                overflow.store(true, Ordering::Relaxed);
+            }
+        })?;
+        Ok(Self {
+            inner,
+            dirs: HashSet::new(),
+        })
+    }
+
+    fn sync(&mut self, wanted: HashSet<PathBuf>) {
+        let stale: Vec<PathBuf> = self.dirs.difference(&wanted).cloned().collect();
+        for dir in stale {
+            let _ = self.inner.unwatch(&dir);
+            self.dirs.remove(&dir);
+        }
+        for dir in wanted {
+            if self.dirs.contains(&dir) {
+                continue;
+            }
+            // A missing directory is retried after the next job; the full
+            // scan still covers files in it meanwhile.
+            match self.inner.watch(&dir, RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    self.dirs.insert(dir);
+                }
+                Err(e) => debug!("WatcherService: can't watch {}: {}", dir.display(), e),
             }
         }
     }
 }
 
-/// Apply pending quarantine lifts, then check sealed records and tracked files.
-fn scan(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
+/// Anything that may have changed a file's contents or existence. Plain
+/// reads (including the daemon's own) are not.
+fn is_write(kind: &EventKind) -> bool {
+    match kind {
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) => false,
+        _ => true,
+    }
+}
+
+/// Run one job and return the tracked set it saw, or `None` if the vault
+/// couldn't be read (the caller keeps what it had).
+fn run_job(
+    vault: &Vault,
+    guard: &Mutex<IntegrityGuard>,
+    policy: &Policy,
+    job: Job,
+    known: &HashSet<PathBuf>,
+    roots: Option<&Roots>,
+) -> Option<HashSet<PathBuf>> {
+    // Cheap and incremental: applies any CLI lift just written.
     lock(guard).sync_quarantine();
-    scan_sealed(vault, guard);
-    scan_tracked(vault, guard, policy);
+
+    let tracked = match vault.tracked_files() {
+        Ok(tracked) => tracked,
+        Err(e) => {
+            warn!("WatcherService: could not list tracked files: {}", e);
+            return None;
+        }
+    };
+    let paths: HashSet<PathBuf> = tracked.iter().map(|t| t.path.clone()).collect();
+
+    match job {
+        Job::Full => {
+            scan_sealed(vault, guard);
+            check_tracked(guard, policy, tracked.iter());
+        }
+        Job::Paths(hits) => {
+            // Newly tracked files get a first check; so does anything hit.
+            let set_changed = roots.is_some_and(|r| {
+                hits.iter()
+                    .any(|p| p.parent() == Some(r.tracked_dir.as_path()))
+            });
+            check_tracked(
+                guard,
+                policy,
+                tracked.iter().filter(|t| {
+                    hits.contains(&t.path) || (set_changed && !known.contains(&t.path))
+                }),
+            );
+        }
+    }
+    Some(paths)
+}
+
+/// Full check: sync quarantine, then every sealed record and tracked file.
+#[cfg(test)]
+fn scan(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
+    run_job(vault, guard, policy, Job::Full, &HashSet::new(), None);
 }
 
 /// Report every sealed record whose object no longer matches its ContentId
@@ -98,16 +349,12 @@ fn scan_sealed(vault: &Vault, guard: &Mutex<IntegrityGuard>) {
     }
 }
 
-/// Classify every tracked file's current contents against its baseline.
-fn scan_tracked(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
-    let tracked = match vault.tracked_files() {
-        Ok(tracked) => tracked,
-        Err(e) => {
-            warn!("WatcherService: could not list tracked files: {}", e);
-            return;
-        }
-    };
-
+/// Classify each tracked file's current contents against its baseline.
+fn check_tracked<'a>(
+    guard: &Mutex<IntegrityGuard>,
+    policy: &Policy,
+    tracked: impl Iterator<Item = &'a TrackedFile>,
+) {
     for t in tracked {
         let live = match read_live(&t.path) {
             Ok(live) => live,
@@ -118,7 +365,7 @@ fn scan_tracked(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
         };
 
         let mut g = lock(guard);
-        g.ensure_cached(&t);
+        g.ensure_cached(t);
 
         let live = match live {
             Live::File { content, .. } => content,
@@ -127,7 +374,7 @@ fn scan_tracked(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
                     "WatcherService: tracked file {} was deleted",
                     t.path.display()
                 );
-                g.record_violation(violation(&t, None));
+                g.record_violation(violation(t, None));
                 continue;
             }
             Live::NotRegular => {
@@ -135,7 +382,7 @@ fn scan_tracked(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
                     "WatcherService: tracked file {} was replaced by a link or other non-regular file",
                     t.path.display()
                 );
-                g.record_violation(violation(&t, None));
+                g.record_violation(violation(t, None));
                 continue;
             }
         };
@@ -157,7 +404,7 @@ fn scan_tracked(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
         match classify_change(&baseline, &live) {
             Change::Clean => {
                 let mode = policy.approval_for(&t.namespace);
-                g.record_clean_edit(&t, live, mode);
+                g.record_clean_edit(t, live, mode);
             }
             Change::Introduced(found) => {
                 warn!(
@@ -166,14 +413,14 @@ fn scan_tracked(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
                     t.path.display(),
                     found[0]
                 );
-                g.record_violation(violation(&t, Some(id)));
+                g.record_violation(violation(t, Some(id)));
             }
             Change::NotText => {
                 warn!(
                     "WatcherService: tracked file {} is no longer UTF-8 text",
                     t.path.display()
                 );
-                g.record_violation(violation(&t, Some(id)));
+                g.record_violation(violation(t, Some(id)));
             }
         }
     }
@@ -445,6 +692,130 @@ mod tests {
         assert_eq!(fs::read_to_string(&secret).unwrap(), "root only\n");
         assert_eq!(f.tracked().stable, f.stable, "target must not be versioned");
         assert_eq!(f.count(JournalOp::VersionAccepted), 0);
+    }
+
+    /// A guard over `f`'s vault with its own settings; the stable copy cached.
+    fn guard_with(f: &Fixture, threshold: u32, debounce_ms: u64) -> IntegrityGuard {
+        let mut cache = VerifiedCache::new(1 << 20);
+        cache.insert(f.stable, CLEAN.as_bytes().to_vec());
+        let (tx, rx) = mpsc::channel(64);
+        std::mem::forget(rx);
+        IntegrityGuard::new(
+            f.vault.clone(),
+            f.journal.clone(),
+            Arc::new(Mutex::new(cache)),
+            tx,
+            threshold,
+            300,
+            debounce_ms,
+            true,
+            2,
+            RestoreOrder::MemoryThenStore,
+        )
+    }
+
+    #[test]
+    fn debounced_writes_count_once_but_are_each_repaired() {
+        let f = fixture(ApprovalMode::Automatic, true);
+        let guard = Mutex::new(guard_with(&f, 3, 60_000));
+        for _ in 0..4 {
+            f.write("let is_\u{200B}admin = false;\n");
+            scan(&f.vault, &guard, &f.policy);
+            assert_eq!(f.read(), CLEAN, "every write in a burst is stripped");
+        }
+        assert_eq!(f.count(JournalOp::WriteViolation), 1);
+        assert_eq!(f.count(JournalOp::IntegritySanitize), 4);
+        assert_eq!(f.count(JournalOp::IntegrityRestore), 0, "burst counts once");
+    }
+
+    /// Poll `ok` for up to 10 s.
+    async fn eventually(mut ok: impl FnMut() -> bool) -> bool {
+        for _ in 0..200 {
+            if ok() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn events_repair_writes_without_waiting_for_a_scan() {
+        let f = fixture(ApprovalMode::Automatic, true);
+        let guard = Arc::new(Mutex::new(guard_with(&f, 5, 0)));
+        // No periodic scan within the test: only events can repair anything.
+        let svc = WatcherService::new(
+            f.vault.clone(),
+            guard,
+            Arc::new(f.policy.clone()),
+            Duration::from_secs(3600),
+        );
+        let task = tokio::spawn(svc.run());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        f.write("let is_\u{200B}admin = false;\n");
+        assert!(
+            eventually(|| f.read() == CLEAN).await,
+            "attack not repaired"
+        );
+
+        // A file tracked after start (as the CLI would) in another directory
+        // is watched too.
+        let other_dir = f._dir.path().join("other");
+        fs::create_dir(&other_dir).unwrap();
+        fs::write(other_dir.join("b.txt"), "second\n").unwrap();
+        let other = canonical_path(&other_dir.join("b.txt")).unwrap();
+        let ns = NamespacePath::parse("code").unwrap();
+        let id = f.vault.write_version(&ns, &other, b"second\n").unwrap();
+        f.vault
+            .update_tracked(&other, |t| {
+                *t = Some(TrackedFile {
+                    path: other.clone(),
+                    namespace: ns,
+                    stable: id,
+                    pending: None,
+                    updated_at: Utc::now(),
+                });
+                Ok(())
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        fs::write(&other, "sec\u{202E}ond\n").unwrap();
+        assert!(
+            eventually(|| fs::read_to_string(&other).unwrap() == "second\n").await,
+            "attack on newly tracked file not repaired"
+        );
+        task.abort();
+    }
+
+    #[test]
+    fn batch_job_rescans_on_overflow_or_rescan_signal() {
+        let p = PathBuf::from("x");
+        assert!(matches!(
+            batch_job(vec![Signal::Paths(vec![p.clone()])], false),
+            Job::Paths(ref s) if s.contains(&p)
+        ));
+        assert!(matches!(
+            batch_job(vec![Signal::Paths(vec![p])], true),
+            Job::Full
+        ));
+        assert!(matches!(batch_job(vec![Signal::Rescan], false), Job::Full));
+    }
+
+    #[test]
+    fn reads_are_not_writes() {
+        use notify::event::{AccessKind, AccessMode, ModifyKind};
+        assert!(!is_write(&EventKind::Access(AccessKind::Open(
+            AccessMode::Any
+        ))));
+        assert!(!is_write(&EventKind::Access(AccessKind::Close(
+            AccessMode::Read
+        ))));
+        assert!(is_write(&EventKind::Access(AccessKind::Close(
+            AccessMode::Write
+        ))));
+        assert!(is_write(&EventKind::Modify(ModifyKind::Any)));
     }
 
     #[test]

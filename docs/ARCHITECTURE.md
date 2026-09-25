@@ -73,7 +73,7 @@ Ultnas is a three-tier system: a **core library**, a **CLI**, and a **background
 
 | Service | Description |
 |---|---|
-| `WatcherService` | inotify/FSEvents-based automatic ingestion |
+| `WatcherService` | Checks tracked files on file-system events (inotify / FSEvents / ReadDirectoryChangesW), with a periodic full scan of tracked files and sealed objects as backstop |
 | `SchedulerService` | Cron-style rotation and cleanup scheduling |
 | `PolicyEnforcer` | Periodic policy compliance scans |
 | `SyncService` | Optional remote vault synchronization (off by default) |

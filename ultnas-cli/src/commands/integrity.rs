@@ -203,7 +203,7 @@ fn cmd_lift_quarantine(vault_root: &Path, namespace: &str, yes: bool) -> Result<
     })?;
 
     println!("✓ Quarantine lift recorded for namespace `{}`.", namespace);
-    println!("  The daemon will apply this on its next watcher scan (within ~30 s).");
+    println!("  A running daemon applies it as soon as it sees the journal change.");
     Ok(())
 }
 

@@ -5,7 +5,8 @@
 //! ```text
 //! WatcherService (spawn_blocking) ──► IntegrityGuard::record_violation(v)
 //!                          │
-//!                    debounce (N ms)
+//!                    debounce: events within N ms share one count
+//!                    (each one is still repaired below)
 //!                          │
 //!                    namespace quarantined? ── YES ──► detect + journal only
 //!                          │
@@ -60,8 +61,8 @@
 //!
 //! ## QuarantineRegistry
 //! Owned by the guard and folded incrementally from the journal (see
-//! [`QuarantineRegistry::sync_from_journal`]), so CLI-issued lifts apply on
-//! the next watcher scan without a daemon restart.
+//! [`QuarantineRegistry::sync_from_journal`]) before every watcher check, so
+//! a CLI-issued lift applies as soon as the watcher sees the journal change.
 
 use chrono::{DateTime, Utc};
 use std::{
@@ -418,37 +419,39 @@ impl IntegrityGuard {
                 window_start: now,
             });
 
-        // Debounce: ignore events closer together than the debounce window.
-        // The first event for a record is never debounced.
-        if tracker
+        // Debounce: events closer together than the debounce window count
+        // once, but each is still repaired — a burst of writes must not slip
+        // through uncounted *and* unrepaired. The first event is never
+        // debounced.
+        let debounced = tracker
             .last_seen
-            .is_some_and(|last| now.duration_since(last) < self.debounce)
-        {
-            tracker.last_seen = Some(now);
-            return;
-        }
+            .is_some_and(|last| now.duration_since(last) < self.debounce);
         tracker.last_seen = Some(now);
 
-        // Start a new rolling window if the current one has expired.
-        if now.duration_since(tracker.window_start) > self.violation_window {
-            tracker.count = 0;
-            tracker.window_start = now;
+        if !debounced {
+            // Start a new rolling window if the current one has expired.
+            if now.duration_since(tracker.window_start) > self.violation_window {
+                tracker.count = 0;
+                tracker.window_start = now;
+            }
+            tracker.count += 1;
         }
-        tracker.count += 1;
 
         let count = tracker.count;
         let restores = tracker.restores;
 
-        self.alert(IntegrityAlert::ViolationDetected {
-            path: path.clone(),
-            count,
-        });
-        self.journal_write(entry(
-            JournalOp::WriteViolation,
-            &v,
-            None,
-            format!("violation_count={count}"),
-        ));
+        if !debounced {
+            self.alert(IntegrityAlert::ViolationDetected {
+                path: path.clone(),
+                count,
+            });
+            self.journal_write(entry(
+                JournalOp::WriteViolation,
+                &v,
+                None,
+                format!("violation_count={count}"),
+            ));
+        }
 
         // Quarantined namespaces are watched and journaled, never repaired.
         if self.quarantine.is_quarantined(&v.namespace) || !self.auto_restore {

@@ -1,8 +1,9 @@
 //! PolicyEnforcer — periodic policy compliance scanner.
 //!
 //! Quarantine state is owned by `IntegrityGuard` and synced from the journal
-//! incrementally on every watcher scan (~30 s), so CLI-issued
-//! `QuarantineLift` operations no longer wait for this 600 s cycle.
+//! incrementally before every watcher check (the watcher reacts to the
+//! journal changing), so CLI-issued `QuarantineLift` operations never wait
+//! for this 600 s cycle.
 //! This service only reports the current state.
 //!
 //! Sequence:

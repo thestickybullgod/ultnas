@@ -33,6 +33,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Policy `approval = "automatic" | "approved"` under `[global.integrity]`, overridable per namespace: clean edits become the stable version immediately, or stay pending until `ultnas approve`
 - Journal ops `TrackFile`, `UntrackFile`, `VersionAccepted`, `VersionPending`, `VersionApproved`, `IntegritySanitize`; entries carry an optional `path`
 - `ultnasd` logs to a daily-rotated file, `<vault>/logs/ultnasd.<date>.log` by default, as well as stdout; `--log-dir`, `--log-keep-days` (default 14), and `--no-log-file` control it. The file writer is lossless
+- `WatcherService` reacts to file-system events (inotify / FSEvents / ReadDirectoryChangesW, via `notify`): each write to a tracked file is inspected within milliseconds and counts as one attempt, and CLI `track` / `untrack` / `lift-quarantine` take effect immediately. A full scan every `--scan-interval-secs` (default 300) remains as a backstop and also runs whenever the OS drops events; if events are unavailable, the daemon polls every 30 s
 
 ### Changed
 - A write that arrived with invisible characters and also changed visible text is held as pending, even in `automatic` mode, so a clean-looking attacker edit can't slip in with it
@@ -50,6 +51,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Replacing a live file checks it is unchanged just before the rename, so an edit made while the daemon was inspecting it isn't overwritten
 
 ### Fixed
+- A violation within `debounce_ms` of the previous one was ignored entirely instead of only sharing its count, so a rapid burst of writes went unrepaired
 - Restore could rewrite a tampered object onto itself and report success (removed the object-store "L2" tier)
 - Cache warm-up admitted unverified bytes as restore sources
 - First violation for a record was always debounced away; the rolling violation window never reset

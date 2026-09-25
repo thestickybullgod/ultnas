@@ -5,6 +5,7 @@ use clap::Parser;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -42,6 +43,10 @@ struct Args {
     debounce_ms: Option<u64>,
     #[arg(long)]
     escalate_after_restores: Option<u32>,
+    /// Full re-hash of every sealed object and tracked file, as a backstop
+    /// to file-system events
+    #[arg(long, default_value_t = 300)]
+    scan_interval_secs: u64,
     #[arg(short, long)]
     verbose: bool,
     /// Directory for the daily-rotated log file (default: <vault>/logs)
@@ -193,8 +198,11 @@ async fn main() -> Result<()> {
         let v2 = vault.clone();
         let g2 = guard.clone();
         let p2 = policy.clone();
+        let scan_interval = args.scan_interval_secs.max(1);
         tokio::spawn(async move {
-            WatcherService::new(v2, g2, p2).run().await;
+            WatcherService::new(v2, g2, p2, Duration::from_secs(scan_interval))
+                .run()
+                .await;
         });
     }
 
