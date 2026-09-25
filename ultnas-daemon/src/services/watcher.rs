@@ -34,10 +34,13 @@
 //! in automatic mode; in approved mode the deletion is a violation, like any
 //! other unapproved change, and the file is recreated.
 //!
+//! Sealed records are event-driven too: the vault's `objects/`, each
+//! `objects/xx/` prefix directory, and `records/` are watched, and an event
+//! names the content id it concerns, so only that record is verified.
+//!
 //! A full scan (every sealed object and tracked file, and a walk of every
 //! tracked directory for files to adopt) runs at start, every
-//! `full_scan_interval`, and whenever the OS reports dropped events. Sealed
-//! objects are only checked by full scans. If watching can't start at all,
+//! `full_scan_interval`, and whenever the OS reports dropped events. If watching can't start at all,
 //! the service falls back to full scans every [`FALLBACK_POLL`].
 //!
 //! Checks hash files, so they — and the guard calls they make — run in
@@ -61,7 +64,7 @@ use tracing::{debug, error, info, warn};
 use ultnas_core::{
     covering_dir, hash_bytes,
     invisible::{classify_change, Change},
-    read_live, ApprovalMode, ContentId, Live, Policy, TrackedDir, TrackedFile, Vault,
+    read_live, ApprovalMode, ContentId, Live, Policy, Record, TrackedDir, TrackedFile, Vault,
 };
 
 use super::integrity_guard::{lock, IntegrityGuard, Target, Violation};
@@ -95,6 +98,8 @@ struct Known {
     dirs: Vec<TrackedDir>,
     /// Directories to watch under tracked directories.
     watch_dirs: HashSet<PathBuf>,
+    /// The vault's `objects/xx/` prefix directories.
+    object_dirs: HashSet<PathBuf>,
 }
 
 /// Directories whose events the service interprets, in the form `notify`
@@ -103,6 +108,8 @@ struct Known {
 struct Roots {
     root: PathBuf,
     tracked_dir: PathBuf,
+    objects_dir: PathBuf,
+    records_dir: PathBuf,
 }
 
 impl WatcherService {
@@ -196,7 +203,12 @@ impl WatcherService {
         let root = std::fs::canonicalize(self.vault.root())?;
         let tracked_dir = root.join("tracked");
         std::fs::create_dir_all(&tracked_dir)?;
-        Ok(Roots { root, tracked_dir })
+        Ok(Roots {
+            objects_dir: root.join("objects"),
+            records_dir: root.join("records"),
+            root,
+            tracked_dir,
+        })
     }
 }
 
@@ -217,11 +229,13 @@ fn batch_job(batch: Vec<Signal>, overflowed: bool) -> Job {
 }
 
 /// What to watch, each non-recursively: the directories under tracked
-/// directories, each tracked file's parent, the vault root, and `tracked/`.
+/// directories, each tracked file's parent, the vault root, `tracked/`,
+/// `records/`, `objects/`, and each `objects/xx/`.
 fn wanted_watches(roots: &Roots, known: &Known) -> HashSet<PathBuf> {
     known
         .watch_dirs
         .iter()
+        .chain(&known.object_dirs)
         .cloned()
         .chain(
             known
@@ -229,7 +243,41 @@ fn wanted_watches(roots: &Roots, known: &Known) -> HashSet<PathBuf> {
                 .iter()
                 .filter_map(|p| p.parent().map(Path::to_path_buf)),
         )
-        .chain([roots.root.clone(), roots.tracked_dir.clone()])
+        .chain([
+            roots.root.clone(),
+            roots.tracked_dir.clone(),
+            roots.objects_dir.clone(),
+            roots.records_dir.clone(),
+        ])
+        .collect()
+}
+
+/// The `objects/xx/` prefix directories that exist now.
+fn object_dirs(roots: &Roots) -> HashSet<PathBuf> {
+    std::fs::read_dir(&roots.objects_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect()
+}
+
+/// Content ids that events under `objects/xx/<id>` or `records/<id>.json`
+/// concern. Anything else there (temp files, stray names) is ignored.
+fn sealed_hits(roots: &Roots, hits: &HashSet<PathBuf>) -> HashSet<ContentId> {
+    hits.iter()
+        .filter_map(|p| {
+            let parent = p.parent()?;
+            let name = if parent.parent() == Some(roots.objects_dir.as_path()) {
+                p.file_name()?.to_str()?
+            } else if parent == roots.records_dir {
+                p.file_name()?.to_str()?.strip_suffix(".json")?
+            } else {
+                return None;
+            };
+            ContentId::from_hex(name).ok()
+        })
         .collect()
 }
 
@@ -344,6 +392,10 @@ fn run_job(
     } else {
         known.watch_dirs.clone()
     };
+    let mut objects = match (&job, roots) {
+        (Job::Full, Some(r)) => object_dirs(r),
+        _ => known.object_dirs.clone(),
+    };
 
     match job {
         Job::Full => {
@@ -354,6 +406,19 @@ fn run_job(
             }
         }
         Job::Paths(hits) => {
+            if let Some(r) = roots {
+                // A new objects/xx/ directory, and sealed records hit.
+                objects.extend(
+                    hits.iter()
+                        .filter(|p| p.parent() == Some(r.objects_dir.as_path()) && p.is_dir())
+                        .cloned(),
+                );
+                for id in sealed_hits(r, &hits) {
+                    if let Ok(record) = vault.get_record(&id) {
+                        verify_sealed(vault, guard, &record);
+                    }
+                }
+            }
             // A change under tracked/ may have added files: first-check them.
             let set_changed = roots.is_some_and(|r| {
                 hits.iter()
@@ -390,6 +455,7 @@ fn run_job(
         files,
         dirs,
         watch_dirs,
+        object_dirs: objects,
     })
 }
 
@@ -426,19 +492,26 @@ fn scan_sealed(vault: &Vault, guard: &Mutex<IntegrityGuard>) {
             return;
         }
     };
+    for record in &records {
+        verify_sealed(vault, guard, record);
+    }
+}
 
-    for record in records.into_iter().filter(|r| r.is_sealed()) {
-        if let Err(e) = vault.verify(&record.id) {
-            warn!(
-                "WatcherService: integrity violation detected on {}: {}",
-                record.id, e
-            );
-            lock(guard).record_violation(Violation {
-                id: record.id,
-                namespace: record.namespace.as_str(),
-                target: Target::Object,
-            });
-        }
+/// Report `record` if it is sealed and its object no longer matches.
+fn verify_sealed(vault: &Vault, guard: &Mutex<IntegrityGuard>, record: &Record) {
+    if !record.is_sealed() {
+        return;
+    }
+    if let Err(e) = vault.verify(&record.id) {
+        warn!(
+            "WatcherService: integrity violation detected on {}: {}",
+            record.id, e
+        );
+        lock(guard).record_violation(Violation {
+            id: record.id,
+            namespace: record.namespace.as_str(),
+            target: Target::Object,
+        });
     }
 }
 
@@ -545,7 +618,9 @@ mod tests {
     use std::{fs, path::PathBuf};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
-    use ultnas_core::{canonical_path, ContentId, Journal, JournalOp, NamespacePath};
+    use ultnas_core::{
+        canonical_path, ContentId, Journal, JournalOp, NamespacePath, RecordBuilder,
+    };
 
     const CLEAN: &str = "let is_admin = false;\n";
 
@@ -1001,21 +1076,99 @@ mod tests {
 
     #[test]
     fn watches_cover_subdirs_file_parents_and_the_vault() {
-        let roots = Roots {
-            root: PathBuf::from("/v"),
-            tracked_dir: PathBuf::from("/v/tracked"),
-        };
+        let roots = test_roots();
         let known = Known {
             files: [PathBuf::from("/w/a.txt"), PathBuf::from("/other/b.txt")].into(),
             dirs: vec![],
             watch_dirs: [PathBuf::from("/w"), PathBuf::from("/w/src")].into(),
+            object_dirs: [PathBuf::from("/v/objects/ab")].into(),
         };
         let w = wanted_watches(&roots, &known);
-        let want: HashSet<PathBuf> = ["/w", "/w/src", "/other", "/v", "/v/tracked"]
-            .iter()
-            .map(PathBuf::from)
-            .collect();
+        let want: HashSet<PathBuf> = [
+            "/w",
+            "/w/src",
+            "/other",
+            "/v",
+            "/v/tracked",
+            "/v/objects",
+            "/v/objects/ab",
+            "/v/records",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
         assert_eq!(w, want);
+    }
+
+    fn test_roots() -> Roots {
+        Roots {
+            root: PathBuf::from("/v"),
+            tracked_dir: PathBuf::from("/v/tracked"),
+            objects_dir: PathBuf::from("/v/objects"),
+            records_dir: PathBuf::from("/v/records"),
+        }
+    }
+
+    #[test]
+    fn sealed_hits_name_objects_and_records_only() {
+        let r = test_roots();
+        let id = hash_bytes(b"x");
+        let hex = id.to_hex();
+        let hits: HashSet<PathBuf> = [
+            r.objects_dir.join(&hex[..2]).join(&hex),
+            r.records_dir.join(format!("{hex}.json")),
+            r.objects_dir.join(&hex[..2]).join(format!("{hex}.123.tmp")),
+            r.records_dir.join("not-an-id.json"),
+            PathBuf::from("/elsewhere").join(&hex),
+        ]
+        .into();
+        assert_eq!(sealed_hits(&r, &hits), [id].into());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn events_repair_sealed_records_without_a_scan() {
+        let f = fixture(ApprovalMode::Automatic, true);
+        let content = b"sealed record\n";
+        let mut record = RecordBuilder::new(NamespacePath::parse("archive").unwrap(), "r")
+            .build(content)
+            .unwrap();
+        record
+            .seal_record("pk".into(), "sig".into(), hash_bytes(b"policy"))
+            .unwrap();
+        f.vault.write_record(&record, content).unwrap();
+
+        let mut cache = VerifiedCache::new(1 << 20);
+        cache.insert(record.id, content.to_vec());
+        let (tx, rx) = mpsc::channel(64);
+        std::mem::forget(rx);
+        // Threshold 1: a sealed object is restored on its first violation.
+        let guard = IntegrityGuard::new(
+            f.vault.clone(),
+            f.journal.clone(),
+            Arc::new(Mutex::new(cache)),
+            tx,
+            1,
+            300,
+            0,
+            true,
+            5,
+            RestoreOrder::MemoryThenStore,
+        );
+        let svc = WatcherService::new(
+            f.vault.clone(),
+            Arc::new(Mutex::new(guard)),
+            Arc::new(f.policy.clone()),
+            Duration::from_secs(3600),
+        );
+        let task = tokio::spawn(svc.run());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        fs::write(f.vault.object_path(&record.id), b"tampered").unwrap();
+        assert!(
+            eventually(|| f.vault.verify(&record.id).is_ok()).await,
+            "tampered sealed object not restored"
+        );
+        task.abort();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
