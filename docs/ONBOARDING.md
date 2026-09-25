@@ -80,11 +80,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Start here:
 
-1. **`ultnas-core/src/lib.rs`** — crate root; see what's exported
-2. **`ultnas-core/src/address.rs`** — simplest module; great entry point
-3. **`ultnas-core/src/record.rs`** — central data model
-4. **`docs/ARCHITECTURE.md`** — system design
-5. **`docs/MODULE_SPECS.md`** — per-module contracts
+1. **`ultnas-core/src/invisible.rs`** — what counts as an invisible character; self-contained
+2. **`ultnas-core/src/tracking.rs`** — tracked files and directories
+3. **`ultnas-daemon/src/services/watcher.rs`** — how changes are noticed and classified
+4. **`ultnas-daemon/src/services/integrity_guard.rs`** — what happens to a violation
+5. **`docs/ARCHITECTURE.md`** and **`docs/MODULE_SPECS.md`** — system design and per-module invariants
+6. **`ultnas-cli/tests/`** — end-to-end tests; they need `cargo build --workspace` first
 
 ---
 

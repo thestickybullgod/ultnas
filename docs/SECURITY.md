@@ -6,27 +6,39 @@
 
 ## Security Model
 
-Ultnas provides **local, user-controlled** security guarantees. It is not a network security product and makes no claims about protection against attackers with physical access to your machine or with OS-level privileges.
+Ultnas protects text files on one machine from writes that change their
+meaning invisibly. It is not a network security product, and it can't stop
+an attacker who can already act as you (or as root) from doing anything
+you could do, including stopping it.
 
 ### What Ultnas Protects Against
 
 | Threat | Mechanism |
 |---|---|
-| Accidental content corruption | BLAKE3 hash verification on every read |
-| Undetected tampering of archived records | ContentId mismatch → `IntegrityFailure` error |
-| Unauthorized record sealing | Ed25519 key required; private key never stored by Ultnas |
-| Policy drift at seal time | Policy file hash embedded in every seal |
-| Concurrent write corruption | OS file lock on `.ultnas-lock`, one daemon per vault |
-| Partial writes on crash | Atomic `write → fsync → rename` for all vault writes |
+| Invisible characters written into a tracked file (zero-width, bidi / "Trojan Source", tag characters, fillers) | Detected on the file-system event and stripped; repeated attempts get the file deleted and recreated from a verified stable copy; repeated restores quarantine the namespace |
+| A clean-looking edit riding in with invisible characters | The stripped result is held for approval, even in automatic mode |
+| Any unapproved edit or deletion (approved mode) | Clean edits wait as pending; deletions inside tracked directories are undone |
+| A tracked file swapped for a symbolic link (e.g. to `/etc/shadow`) or a FIFO | Tracked paths are opened without following links or blocking; anything that isn't a regular file is replaced, and the link's target is never read, written, or copied |
+| A link planted at a temp-file name to redirect a write | Temp files are created with `create_new`, never reusing an existing name |
+| Overwriting an edit made while the daemon was inspecting the file | Every replacement is abandoned if the file changed since it was read |
+| A writer holding the old file open | Delete-and-recreate gives the file a new inode |
+| "Repairing" kernel state | `/proc`, `/sys`, `/dev`, `/run` and other pseudo-filesystems can't be tracked; tracked directories never cross filesystems |
+| Damaged restore sources | Every copy (memory, vault, mirror) is hash-checked before use |
+| Two daemons fighting over one vault | OS file lock on `.ultnas-lock` |
+| Other users talking to your daemon | Unix socket mode `0600`; on Windows a local-only named pipe claimed as first instance |
+| Partial writes on crash | Atomic `write → fsync → rename` for vault and live-file writes |
 
 ### What Ultnas Does NOT Protect Against
 
 | Threat | Notes |
 |---|---|
-| Attacker with OS-level access | Can delete the vault, replace lock files, or steal keys |
-| Encryption at rest | Ultnas stores content in plaintext. Use full-disk encryption (e.g. LUKS, FileVault) separately. |
-| Network attackers | Ultnas is local-first; sync features (planned v0.3+) will document their own threat model |
-| Compromised signing keys | Keep Ed25519 private keys in a hardware token or encrypted key store |
+| Look-alike characters (homoglyphs) | A Cyrillic `а` in place of a Latin `a` is visible text, not an invisible character, and isn't detected |
+| Clean malicious edits in automatic mode | Anything that can write clean text can change a file, and automatic mode accepts it. Use `approval = "approved"` where that matters |
+| An attacker running as you (or as root) | They can stop the daemon, edit the vault, or untrack files. Protect `/etc` with the system service as root |
+| Changes made while the daemon isn't running | They are caught at the next start, when each file is compared with its stable copy, not prevented |
+| Contexts where the detection is only a heuristic | Context-sensitive characters (ZWJ, ZWNJ, LRM/RLM, variation selectors) are flagged only between ASCII characters; right-to-left text using direction marks next to digits may be flagged |
+| Encryption at rest | The vault stores file versions in plaintext. Use full-disk encryption |
+| A tampered journal | The journal is append-only by convention, not tamper-evident |
 
 ---
 
@@ -34,28 +46,10 @@ Ultnas provides **local, user-controlled** security guarantees. It is not a netw
 
 | Primitive | Use | Library |
 |---|---|---|
-| BLAKE3 | Content addressing, policy hashing, journal integrity | `blake3` crate |
-| Ed25519 | Record seal signatures | `ed25519-dalek` crate |
+| BLAKE3 | Content addressing and every integrity check | `blake3` crate |
+| Ed25519 | Record seal signatures (archiving) | `ed25519-dalek` crate |
 
-No custom cryptographic code is written. Ultnas uses well-audited Rust crates for all cryptographic operations.
-
----
-
-## Key Management
-
-Ultnas does **not** manage your Ed25519 signing keys. You are responsible for:
-
-1. Generating keys outside of Ultnas (e.g. with `openssl`, `age`, or a hardware token)
-2. Providing the signing key at seal time
-3. Storing the private key securely — in an encrypted keystore, hardware security module, or system keychain
-
-The public key is stored in every `RecordSeal` and is the authoritative identity for that seal.
-
----
-
-## Audit Log
-
-Every mutation to the vault is written to `journal.log` — an append-only, newline-delimited JSON file. The journal cannot be selectively modified without leaving detectable gaps. Use `ultnas journal verify` (planned v0.2) to check journal continuity.
+No custom cryptographic code is written.
 
 ---
 
@@ -78,8 +72,8 @@ Alternatively, use **GitHub's private security advisory** feature:
 
 | Severity | Examples |
 |---|---|
-| Critical | Remote code execution, cryptographic bypass, vault data destruction |
-| High | Local privilege escalation, seal forgery, integrity check bypass |
+| Critical | Remote code execution, cryptographic bypass, vault data destruction, writing outside a tracked path |
+| High | Local privilege escalation, an invisible-character write that isn't repaired, integrity check bypass |
 | Moderate | Denial of service, information disclosure, policy bypass |
 | Low | Minor information leakage, non-exploitable edge cases |
 

@@ -186,7 +186,8 @@ ultnas/
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, storage layout, IPC protocol, security boundaries |
 | [SECURITY.md](docs/SECURITY.md) | Security model, threat model, and vulnerability disclosure |
 | [ONBOARDING.md](docs/ONBOARDING.md) | Contributor onboarding and dev environment setup |
-| [MODULE_SPECS.md](docs/MODULE_SPECS.md), [API_REFERENCE.md](docs/API_REFERENCE.md) | Crate and API reference (partly predates text protection) |
+| [MODULE_SPECS.md](docs/MODULE_SPECS.md), [API_REFERENCE.md](docs/API_REFERENCE.md) | What each module does and guarantees; where to start with the API (`cargo doc` for the full reference) |
+| [TESTING_LINUX.md](TESTING_LINUX.md) | Step-by-step guide to testing the Linux package |
 | [CHANGELOG.md](CHANGELOG.md) | What changed |
 
 ## Contributing
