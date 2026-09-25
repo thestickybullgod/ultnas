@@ -14,9 +14,16 @@ use chrono::Utc;
 use clap::Args;
 use std::path::{Path, PathBuf};
 use ultnas_core::{
-    canonical_path, covering_dir, invisible, read_live, rewrite_file, ContentId, Journal,
-    JournalEntry, JournalOp, Live, NamespacePath, TrackedDir, TrackedFile, Vault,
+    canonical_path, check_trackable, covering_dir, device_of, invisible, read_live, rewrite_file,
+    ContentId, Journal, JournalEntry, JournalOp, Live, NamespacePath, TrackedDir, TrackedFile,
+    Vault,
 };
+
+use super::prompt::confirm;
+
+/// Directory sizes past which `track --recursive` asks before going ahead.
+const CONFIRM_FILES: usize = 10_000;
+const CONFIRM_BYTES: u64 = 1 << 30;
 
 #[derive(Args)]
 pub struct TrackArgs {
@@ -36,6 +43,10 @@ pub struct TrackArgs {
     /// below (repeatable, e.g. --exclude target --exclude node_modules)
     #[arg(long, requires = "recursive")]
     pub exclude: Vec<String>,
+    /// Don't ask for confirmation (tracking `/`, a directory outside your
+    /// home, or a very large one)
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(Args)]
@@ -47,6 +58,7 @@ pub struct FileArg {
 pub fn track(vault_root: &Path, args: TrackArgs) -> Result<()> {
     let vault = Vault::open(vault_root)?;
     let path = canonical_path(&args.file)?;
+    check_trackable(&path)?;
     let namespace = NamespacePath::parse(&args.namespace)?;
     if path.is_dir() {
         if !args.recursive {
@@ -55,7 +67,12 @@ pub fn track(vault_root: &Path, args: TrackArgs) -> Result<()> {
                 path.display()
             );
         }
-        return track_dir(&vault, path, namespace, &args);
+        let opts = DirOptions {
+            exclude: args.exclude.clone(),
+            accept_existing: args.accept_existing,
+            yes: args.yes,
+        };
+        return track_dir(&vault, path, namespace, &opts);
     }
     if args.recursive {
         bail!(
@@ -92,14 +109,14 @@ pub fn track(vault_root: &Path, args: TrackArgs) -> Result<()> {
     }
 }
 
-enum Outcome {
+pub(crate) enum Outcome {
     Tracked(ContentId),
     AlreadyTracked,
     NotText,
     HasInvisible(Vec<invisible::Finding>),
 }
 
-fn track_one(
+pub(crate) fn track_one(
     vault: &Vault,
     path: &Path,
     namespace: &NamespacePath,
@@ -144,35 +161,91 @@ fn track_one(
     Ok(Outcome::Tracked(id))
 }
 
-fn track_dir(
+pub(crate) struct DirOptions {
+    pub exclude: Vec<String>,
+    pub accept_existing: bool,
+    pub yes: bool,
+}
+
+/// Why tracking `path` deserves a second look, if it does.
+fn needs_confirmation(path: &Path, files: usize, bytes: u64) -> Vec<String> {
+    let mut why = vec![];
+    if path.parent().is_none() {
+        why.push("it is the root of the filesystem".to_string());
+    } else if home().is_some_and(|h| !path.starts_with(h)) {
+        why.push("it is outside your home directory".to_string());
+    }
+    if files > CONFIRM_FILES || bytes > CONFIRM_BYTES {
+        why.push(format!(
+            "it holds {files} candidate files ({} MiB); each is copied into the vault",
+            bytes >> 20
+        ));
+    }
+    why
+}
+
+/// The user's home directory, canonical.
+pub(crate) fn home() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::fs::canonicalize(std::env::var_os(var)?).ok()
+}
+
+pub(crate) fn track_dir(
     vault: &Vault,
     path: PathBuf,
     namespace: NamespacePath,
-    args: &TrackArgs,
+    opts: &DirOptions,
 ) -> Result<()> {
+    check_trackable(&path)?;
     if vault.tracked_dirs()?.iter().any(|d| d.path == path) {
         bail!("{} is already tracked", path.display());
     }
     let mut dir = TrackedDir {
         path: path.clone(),
         namespace: namespace.clone(),
-        exclude: args.exclude.clone(),
+        exclude: opts.exclude.clone(),
         ignored: vec![],
         added_at: Utc::now(),
+        device: std::fs::metadata(&path).ok().as_ref().and_then(device_of),
     };
     let vault_root = canonical_path(vault.root())?;
     if vault_root.starts_with(&path) {
         dir.ignored.push(vault_root);
     }
 
+    // Preview from metadata alone, before reading any file.
+    let candidates = dir.candidates();
+    let bytes: u64 = candidates
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum();
+    let why = needs_confirmation(&path, candidates.len(), bytes);
+    if !why.is_empty() {
+        println!(
+            "About to track {} (up to {} files, {} MiB) because:",
+            path.display(),
+            candidates.len(),
+            bytes >> 20
+        );
+        for w in &why {
+            println!("  - {w}");
+        }
+        println!("  Other filesystems mounted below it are not included.");
+        if !confirm("Track it?", opts.yes)? {
+            println!("Nothing tracked.");
+            return Ok(());
+        }
+    }
+
     // Sort files first, so the directory is recorded with its exceptions
     // before the daemon can see it and adopt (and strip) anything.
     let (mut clean, mut binary, mut dirty) = (vec![], 0usize, vec![]);
-    for file in dir.candidates() {
+    for file in candidates {
         match std::fs::read(&file).map(String::from_utf8) {
             Ok(Ok(text)) => {
                 let n = invisible::scan(&text).len();
-                if n == 0 || args.accept_existing {
+                if n == 0 || opts.accept_existing {
                     clean.push(file);
                 } else {
                     dirty.push((file, n));
@@ -430,4 +503,30 @@ fn journal(
 
 fn short(id: &ContentId) -> String {
     id.to_hex()[..12].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_and_large_directories_need_confirmation() {
+        let root = if cfg!(windows) { r"C:\" } else { "/" };
+        let why = needs_confirmation(Path::new(root), 1, 1);
+        assert!(why.iter().any(|w| w.contains("root")), "{why:?}");
+
+        let big = needs_confirmation(Path::new(root).join("x").as_path(), CONFIRM_FILES + 1, 0);
+        assert!(big.iter().any(|w| w.contains("candidate files")), "{big:?}");
+        let heavy = needs_confirmation(Path::new(root).join("x").as_path(), 1, CONFIRM_BYTES + 1);
+        assert!(
+            heavy.iter().any(|w| w.contains("candidate files")),
+            "{heavy:?}"
+        );
+    }
+
+    #[test]
+    fn small_directory_in_home_needs_no_confirmation() {
+        let Some(home) = home() else { return };
+        assert!(needs_confirmation(&home.join("project"), 10, 1024).is_empty());
+    }
 }

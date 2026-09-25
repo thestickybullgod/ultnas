@@ -68,4 +68,7 @@ pub use vault::{Vault, VaultManifest};
 pub use live::{read_live, recreate_file, rewrite_file, Live};
 
 // tracking
-pub use tracking::{canonical_path, covering_dir, TrackedDir, TrackedFile, MAX_ADOPT_BYTES};
+pub use tracking::{
+    canonical_path, check_trackable, covering_dir, device_of, TrackedDir, TrackedFile,
+    MAX_ADOPT_BYTES,
+};

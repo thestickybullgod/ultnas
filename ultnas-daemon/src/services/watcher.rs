@@ -17,8 +17,11 @@
 //!
 //! - Each tracked file's *directory* is watched, not the file: restores and
 //!   editors replace files by rename, which would orphan a per-file watch.
-//!   Tracked directories are watched recursively, and a file that appears
-//!   in one is adopted (`IntegrityGuard::adopt`).
+//!   Under a tracked directory, every subdirectory it could adopt from is
+//!   watched — not hidden, excluded, or ignored ones, and never across into
+//!   another filesystem, so tracking `/` doesn't descend into `/proc` or
+//!   spend watches on `node_modules`. New subdirectories are picked up as
+//!   they appear, and a file that appears is adopted (`IntegrityGuard::adopt`).
 //! - The vault root (for `journal.log`: CLI quarantine lifts) and `tracked/`
 //!   (files tracked or untracked by the CLI) are watched too, so both apply
 //!   at once and the watch set follows the tracked set.
@@ -45,7 +48,7 @@ use notify::{
     Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -90,6 +93,8 @@ enum Job {
 struct Known {
     files: HashSet<PathBuf>,
     dirs: Vec<TrackedDir>,
+    /// Directories to watch under tracked directories.
+    watch_dirs: HashSet<PathBuf>,
 }
 
 /// Directories whose events the service interprets, in the form `notify`
@@ -211,33 +216,21 @@ fn batch_job(batch: Vec<Signal>, overflowed: bool) -> Job {
     }
 }
 
-/// What to watch: every tracked directory recursively; the vault root,
-/// `tracked/`, and each tracked file's parent non-recursively. Anything
-/// already under a recursive watch is left to it, since watching one
-/// directory two ways would let unwatching one undo the other.
-fn wanted_watches(roots: &Roots, known: &Known) -> HashMap<PathBuf, RecursiveMode> {
-    let mut recursive: Vec<&Path> = known.dirs.iter().map(|d| d.path.as_path()).collect();
-    recursive.sort_by_key(|p| p.components().count());
-    let mut out: HashMap<PathBuf, RecursiveMode> = HashMap::new();
-    for dir in recursive {
-        if !out.keys().any(|r| dir.starts_with(r)) {
-            out.insert(dir.to_path_buf(), RecursiveMode::Recursive);
-        }
-    }
-    let flat = known
-        .files
+/// What to watch, each non-recursively: the directories under tracked
+/// directories, each tracked file's parent, the vault root, and `tracked/`.
+fn wanted_watches(roots: &Roots, known: &Known) -> HashSet<PathBuf> {
+    known
+        .watch_dirs
         .iter()
-        .filter_map(|p| p.parent())
-        .chain([roots.root.as_path(), roots.tracked_dir.as_path()]);
-    for dir in flat {
-        let covered = out
-            .iter()
-            .any(|(r, m)| *m == RecursiveMode::Recursive && dir.starts_with(r));
-        if !covered {
-            out.insert(dir.to_path_buf(), RecursiveMode::NonRecursive);
-        }
-    }
-    out
+        .cloned()
+        .chain(
+            known
+                .files
+                .iter()
+                .filter_map(|p| p.parent().map(Path::to_path_buf)),
+        )
+        .chain([roots.root.clone(), roots.tracked_dir.clone()])
+        .collect()
 }
 
 enum Signal {
@@ -249,7 +242,10 @@ enum Signal {
 /// The OS-level watches, kept in step with the tracked set.
 struct Watches {
     inner: RecommendedWatcher,
-    dirs: HashMap<PathBuf, RecursiveMode>,
+    dirs: HashSet<PathBuf>,
+    /// Directories that couldn't be watched at the last sync, to warn only
+    /// when that changes.
+    failed: usize,
 }
 
 impl Watches {
@@ -267,32 +263,42 @@ impl Watches {
         })?;
         Ok(Self {
             inner,
-            dirs: HashMap::new(),
+            dirs: HashSet::new(),
+            failed: 0,
         })
     }
 
-    fn sync(&mut self, wanted: HashMap<PathBuf, RecursiveMode>) {
-        let stale: Vec<PathBuf> = self
-            .dirs
-            .iter()
-            .filter(|(d, m)| wanted.get(*d) != Some(*m))
-            .map(|(d, _)| d.clone())
-            .collect();
+    fn sync(&mut self, wanted: HashSet<PathBuf>) {
+        let stale: Vec<PathBuf> = self.dirs.difference(&wanted).cloned().collect();
         for dir in stale {
             let _ = self.inner.unwatch(&dir);
             self.dirs.remove(&dir);
         }
-        for (dir, mode) in wanted {
-            if self.dirs.contains_key(&dir) {
+        let mut failed = vec![];
+        for dir in wanted {
+            if self.dirs.contains(&dir) {
                 continue;
             }
-            // A missing directory is retried after the next job; the full
-            // scan still covers files in it meanwhile.
-            match self.inner.watch(&dir, mode) {
+            match self.inner.watch(&dir, RecursiveMode::NonRecursive) {
                 Ok(()) => {
-                    self.dirs.insert(dir, mode);
+                    self.dirs.insert(dir);
                 }
-                Err(e) => debug!("WatcherService: can't watch {}: {}", dir.display(), e),
+                // Gone since it was listed; the next full scan drops it.
+                Err(e) if matches!(e.kind, notify::ErrorKind::PathNotFound) => {}
+                Err(e) => failed.push((dir, e)),
+            }
+        }
+        if failed.len() != self.failed {
+            self.failed = failed.len();
+            if let Some((dir, e)) = failed.first() {
+                warn!(
+                    "WatcherService: can't watch {} director(y/ies) (first: {}: {}). \
+                     Files there are still checked by full scans; on Linux, raising \
+                     fs.inotify.max_user_watches may help",
+                    failed.len(),
+                    dir.display(),
+                    e
+                );
             }
         }
     }
@@ -330,6 +336,15 @@ fn run_job(
     };
     let files: HashSet<PathBuf> = tracked.iter().map(|t| t.path.clone()).collect();
 
+    // Directories to watch under tracked directories: walked afresh on a
+    // full scan or when the tracked directories change, extended as new
+    // directories appear, otherwise carried over (walking is expensive).
+    let mut watch_dirs: HashSet<PathBuf> = if matches!(job, Job::Full) || known.dirs != dirs {
+        dirs.iter().flat_map(|d| d.subdirs(&d.path)).collect()
+    } else {
+        known.watch_dirs.clone()
+    };
+
     match job {
         Job::Full => {
             scan_sealed(vault, guard);
@@ -339,8 +354,7 @@ fn run_job(
             }
         }
         Job::Paths(hits) => {
-            // A change under tracked/ may have added files or directories:
-            // first-check new files, and walk new directories.
+            // A change under tracked/ may have added files: first-check them.
             let set_changed = roots.is_some_and(|r| {
                 hits.iter()
                     .any(|p| p.parent() == Some(r.tracked_dir.as_path()))
@@ -352,16 +366,31 @@ fn run_job(
                     hits.contains(&t.path) || (set_changed && !known.files.contains(&t.path))
                 }),
             );
-            let new_dirs = dirs
-                .iter()
-                .filter(|d| set_changed && !known.dirs.contains(d));
-            for dir in new_dirs {
+            for dir in dirs.iter().filter(|d| !known.dirs.contains(d)) {
                 adopt_new(guard, &dirs, &files, dir.candidates());
+            }
+            // A directory created under a tracked directory: watch it, and
+            // adopt what's already inside, since files can land before the
+            // watch does.
+            for hit in &hits {
+                let Some(dir) = covering_dir(&dirs, hit) else {
+                    continue;
+                };
+                let is_new_dir = std::fs::symlink_metadata(hit)
+                    .is_ok_and(|m| m.is_dir() && dir.same_filesystem(&m));
+                if is_new_dir {
+                    watch_dirs.extend(dir.subdirs(hit));
+                    adopt_new(guard, &dirs, &files, dir.candidates_in(hit));
+                }
             }
             adopt_new(guard, &dirs, &files, hits);
         }
     }
-    Some(Known { files, dirs })
+    Some(Known {
+        files,
+        dirs,
+        watch_dirs,
+    })
 }
 
 /// Adopt each untracked path that a tracked directory covers.
@@ -868,6 +897,7 @@ mod tests {
             exclude: vec!["target".into()],
             ignored: vec![canonical_path(f.vault.root()).unwrap()],
             added_at: Utc::now(),
+            device: None,
         };
         f.vault
             .update_tracked_dir(&d.path, |s| {
@@ -970,31 +1000,54 @@ mod tests {
     }
 
     #[test]
-    fn nested_watches_collapse_into_the_outer_recursive_one() {
+    fn watches_cover_subdirs_file_parents_and_the_vault() {
         let roots = Roots {
             root: PathBuf::from("/v"),
             tracked_dir: PathBuf::from("/v/tracked"),
         };
-        let dir = |p: &str| TrackedDir {
-            path: PathBuf::from(p),
-            namespace: NamespacePath::parse("x").unwrap(),
-            exclude: vec![],
-            ignored: vec![],
-            added_at: Utc::now(),
-        };
         let known = Known {
-            files: [PathBuf::from("/w/sub/a.txt"), PathBuf::from("/other/b.txt")].into(),
-            dirs: vec![dir("/w/sub"), dir("/w")],
+            files: [PathBuf::from("/w/a.txt"), PathBuf::from("/other/b.txt")].into(),
+            dirs: vec![],
+            watch_dirs: [PathBuf::from("/w"), PathBuf::from("/w/src")].into(),
         };
         let w = wanted_watches(&roots, &known);
-        assert_eq!(w.get(Path::new("/w")), Some(&RecursiveMode::Recursive));
-        assert_eq!(w.get(Path::new("/w/sub")), None);
-        assert_eq!(
-            w.get(Path::new("/other")),
-            Some(&RecursiveMode::NonRecursive)
+        let want: HashSet<PathBuf> = ["/w", "/w/src", "/other", "/v", "/v/tracked"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(w, want);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn events_follow_directories_created_after_start() {
+        let f = fixture(ApprovalMode::Automatic, true);
+        let d = track_dir(&f);
+        let guard = Arc::new(Mutex::new(guard_with(&f, 5, 0)));
+        let svc = WatcherService::new(
+            f.vault.clone(),
+            guard,
+            Arc::new(f.policy.clone()),
+            Duration::from_secs(3600),
         );
-        assert_eq!(w.get(Path::new("/v")), Some(&RecursiveMode::NonRecursive));
-        assert_eq!(w.len(), 4);
+        let task = tokio::spawn(svc.run());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // A new directory tree, with a file in it straight away.
+        let deep = d.path.join("later").join("deeper");
+        fs::create_dir_all(&deep).unwrap();
+        let p = deep.join("n.txt");
+        fs::write(&p, "note\n").unwrap();
+        assert!(
+            eventually(|| tracked_paths(&f).contains(&p)).await,
+            "file in new directory not adopted"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        fs::write(&p, "no\u{200B}te\n").unwrap();
+        assert!(
+            eventually(|| fs::read_to_string(&p).unwrap() == "note\n").await,
+            "attack in new directory not repaired"
+        );
+        task.abort();
     }
 
     #[test]

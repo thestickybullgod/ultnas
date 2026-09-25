@@ -54,6 +54,11 @@ pub enum UltnasCoreError {
     #[error("journal error: {0}")]
     Journal(String),
 
+    /// A path the daemon must never track, such as a kernel pseudo-filesystem
+    /// where "stripping" a character would mean writing a kernel setting.
+    #[error("{path} can't be tracked: {reason}")]
+    Untrackable { path: PathBuf, reason: String },
+
     /// A live file changed between being inspected and being replaced; the
     /// replacement was abandoned so the newer write isn't lost.
     #[error("{0} changed while it was being replaced")]

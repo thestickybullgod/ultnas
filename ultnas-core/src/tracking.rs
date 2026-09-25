@@ -9,7 +9,13 @@
 //! A *tracked directory* ([`TrackedDir`]) tracks every text file under it,
 //! including files created later, which the daemon adopts. Hidden names,
 //! editor scratch files, excluded names, and explicitly untracked paths are
-//! skipped ([`TrackedDir::covers`]).
+//! skipped ([`TrackedDir::covers`]), and so is anything on a different
+//! filesystem from the directory itself: tracking `/` covers the root
+//! filesystem only, never `/proc`, `/sys`, or other mounts below it.
+//!
+//! Kernel pseudo-filesystems can't be tracked at all ([`check_trackable`]):
+//! their "files" are live kernel state, and repairing one would mean
+//! writing a kernel setting.
 //!
 //! State lives in `tracked/<blake3 of path>.json` (files) and
 //! `tracked/<blake3 of path>.tdir` (directories). The CLI (track, approve)
@@ -24,11 +30,11 @@ use crate::{
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, Metadata, OpenOptions},
     io::ErrorKind,
     path::{Path, PathBuf},
 };
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 /// Largest file a tracked directory adopts.
 pub const MAX_ADOPT_BYTES: u64 = 16 * 1024 * 1024;
@@ -69,6 +75,10 @@ pub struct TrackedDir {
     #[serde(default)]
     pub ignored: Vec<PathBuf>,
     pub added_at: DateTime<Utc>,
+    /// Device id of the directory's filesystem (Unix). Nothing on another
+    /// filesystem is adopted.
+    #[serde(default)]
+    pub device: Option<u64>,
 }
 
 impl TrackedDir {
@@ -93,24 +103,126 @@ impl TrackedDir {
         name.starts_with('.') || self.exclude.iter().any(|e| e == name)
     }
 
-    /// Regular files now under the directory that it covers, up to
-    /// [`MAX_ADOPT_BYTES`]. Symbolic links are neither followed nor listed.
-    pub fn candidates(&self) -> Vec<PathBuf> {
-        WalkDir::new(&self.path)
+    /// Whether a file with this metadata is on the directory's filesystem.
+    pub fn same_filesystem(&self, meta: &Metadata) -> bool {
+        match (self.device, device_of(meta)) {
+            (Some(dir), Some(file)) => dir == file,
+            _ => true,
+        }
+    }
+
+    /// Entries under `start` (this directory or one inside it) that the
+    /// directory doesn't skip, staying on `start`'s filesystem and never
+    /// following links.
+    fn walk(&self, start: &Path) -> impl Iterator<Item = DirEntry> + '_ {
+        WalkDir::new(start)
             .follow_links(false)
+            .same_file_system(true)
             .into_iter()
-            .filter_entry(|e| {
+            .filter_entry(move |e| {
                 e.depth() == 0
                     || (!self.skips_name(&e.file_name().to_string_lossy())
                         && !self.ignored.iter().any(|i| e.path().starts_with(i)))
             })
             .filter_map(Result::ok)
+    }
+
+    /// Regular files now under the directory that it covers, up to
+    /// [`MAX_ADOPT_BYTES`]. Symbolic links are neither followed nor listed.
+    pub fn candidates(&self) -> Vec<PathBuf> {
+        self.candidates_in(&self.path)
+    }
+
+    /// [`TrackedDir::candidates`], limited to the subtree at `start`.
+    pub fn candidates_in(&self, start: &Path) -> Vec<PathBuf> {
+        self.walk(start)
             .filter(|e| e.file_type().is_file())
             .filter(|e| e.metadata().is_ok_and(|m| m.len() <= MAX_ADOPT_BYTES))
             .map(|e| e.into_path())
             .filter(|p| self.covers(p))
             .collect()
     }
+
+    /// Directories at and under `start` that files could be adopted from:
+    /// what the daemon watches for this tracked directory.
+    pub fn subdirs(&self, start: &Path) -> Vec<PathBuf> {
+        self.walk(start)
+            .filter(|e| e.file_type().is_dir())
+            .map(|e| e.into_path())
+            .collect()
+    }
+}
+
+/// Device id of the filesystem holding a file (Unix only).
+pub fn device_of(meta: &Metadata) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(meta.dev())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
+    }
+}
+
+/// Refuse paths on kernel pseudo-filesystems (`/proc`, `/sys`, `/dev`,
+/// `/run`, and on Linux anything whose filesystem type is one of them,
+/// wherever it is mounted). Their files are live kernel state: reads can
+/// block or change, and a write is a kernel setting, not an edit.
+pub fn check_trackable(path: &Path) -> Result<(), UltnasCoreError> {
+    let refuse = |reason: String| {
+        Err(UltnasCoreError::Untrackable {
+            path: path.to_path_buf(),
+            reason,
+        })
+    };
+    #[cfg(unix)]
+    for root in ["/proc", "/sys", "/dev", "/run"] {
+        if path.starts_with(root) {
+            return refuse(format!("{root} holds kernel or runtime state, not files"));
+        }
+    }
+    if let Some(fs) = pseudo_filesystem(path) {
+        return refuse(format!("it is on a {fs} pseudo-filesystem"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn pseudo_filesystem(path: &Path) -> Option<&'static str> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `c` is a valid NUL-terminated path and `st` a writable statfs.
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    // f_type's width varies by architecture; the magic numbers are 32-bit.
+    #[allow(clippy::unnecessary_cast)]
+    let magic = (st.f_type as u64) & 0xffff_ffff;
+    Some(match magic {
+        0x9fa0 => "proc",
+        0x6265_6572 => "sysfs",
+        0x1373 => "devfs",
+        0x1cd1 => "devpts",
+        0x0027_e0eb => "cgroup",
+        0x6367_7270 => "cgroup2",
+        0x6462_6720 => "debugfs",
+        0x7363_6673 => "securityfs",
+        0xcafe_4a11 => "bpf",
+        0x7472_6163 => "tracefs",
+        0x6265_6570 => "configfs",
+        0xde5e_81e4 => "efivarfs",
+        0x6165_676c => "pstore",
+        _ => return None,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pseudo_filesystem(_path: &Path) -> Option<&'static str> {
+    None
 }
 
 /// Editor and tool scratch files (including the daemon's own `*.tmp`),
@@ -381,6 +493,7 @@ mod tests {
             exclude: vec!["target".into()],
             ignored: vec![root.join("vault")],
             added_at: Utc::now(),
+            device: None,
         }
     }
 
@@ -441,6 +554,62 @@ mod tests {
             got,
             vec![PathBuf::from("a.txt"), PathBuf::from("src").join("b.rs")]
         );
+    }
+
+    #[test]
+    fn subdirs_skip_hidden_and_excluded_directories() {
+        let dir = TempDir::new().unwrap();
+        let root = canonical_path(dir.path()).unwrap();
+        for d in ["src/deep", ".git/objects", "target/debug"] {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let mut got: Vec<_> = tdir(&root)
+            .subdirs(&root)
+            .into_iter()
+            .map(|p| p.strip_prefix(&root).unwrap().to_path_buf())
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                PathBuf::new(),
+                PathBuf::from("src"),
+                PathBuf::from("src").join("deep")
+            ]
+        );
+    }
+
+    #[test]
+    fn ordinary_directories_are_trackable() {
+        let dir = TempDir::new().unwrap();
+        check_trackable(dir.path()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kernel_pseudo_filesystems_are_not_trackable() {
+        for p in [
+            "/proc",
+            "/proc/sys/kernel/hostname",
+            "/sys/kernel",
+            "/dev/shm/x",
+            "/run/user",
+        ] {
+            assert!(
+                matches!(
+                    check_trackable(Path::new(p)),
+                    Err(UltnasCoreError::Untrackable { .. })
+                ),
+                "{p}"
+            );
+        }
+        check_trackable(Path::new("/")).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn procfs_is_recognised_by_type() {
+        assert_eq!(pseudo_filesystem(Path::new("/proc/self")), Some("proc"));
     }
 
     #[test]

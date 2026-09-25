@@ -96,7 +96,17 @@ first version becomes its stable version, after any invisible characters in
 it are stripped. Skipped: hidden files and directories (`.git`, `.env`, …),
 editor scratch files (`*~`, `*.swp`, `*.tmp`, `#…#`, …), names given with
 `--exclude` (e.g. `--exclude target --exclude node_modules`), binary files,
-files over 16 MiB, and a vault inside the directory. Files that already
+files over 16 MiB, a vault inside the directory, and anything on a different
+filesystem from the directory: tracking `/` covers the root filesystem only.
+Track other filesystems (a separate `/home`, say) on their own.
+
+Kernel pseudo-filesystems (`/proc`, `/sys`, `/dev`, `/run`, and on Linux any
+proc, sysfs, cgroup, debugfs, … mount) can't be tracked at all: their files
+are live kernel state, and "repairing" one would write a kernel setting.
+Tracking `/`, a directory outside your home, or one with more than 10,000
+candidate files or 1 GiB of them shows a preview and asks first (`--yes`
+skips the question). Every tracked file is copied into the vault, so a large
+tree costs that much space. Files that already
 contain invisible characters when the directory is tracked are listed and
 left untracked unless `--accept-existing` is given.
 

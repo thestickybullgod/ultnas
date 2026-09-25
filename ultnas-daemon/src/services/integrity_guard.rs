@@ -593,10 +593,17 @@ impl IntegrityGuard {
         if self.is_degraded() || self.quarantine.is_quarantined(&dir.namespace.as_str()) {
             return;
         }
+        // Nothing on another filesystem, i.e. a mount below the tracked
+        // directory — checked before reading, so a pseudo-filesystem mounted
+        // there is never even opened.
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if dir.same_filesystem(&m) => {}
+            _ => return,
+        }
         let Ok(Live::File { content, meta }) = read_live(path) else {
             return;
         };
-        if meta.len() > MAX_ADOPT_BYTES {
+        if meta.len() > MAX_ADOPT_BYTES || !dir.same_filesystem(&meta) {
             return;
         }
         let observed = hash_bytes(&content);

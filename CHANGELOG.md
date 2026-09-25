@@ -47,6 +47,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - `ultnas integrity status` / `lift-quarantine` use the same quarantine fold as the daemon; lift validates the namespace
 
 ### Security
+- Kernel pseudo-filesystems (`/proc`, `/sys`, `/dev`, `/run`, and on Linux any proc/sysfs/cgroup/debugfs/… mount, found by filesystem type) can't be tracked: repairing a file there would write a kernel setting. Tracked directories never cross into another filesystem when walking, watching, or adopting
+- Tracking `/`, a directory outside your home, or a very large directory previews the file count and size and asks first (`--yes` to skip); without a terminal it refuses
+- Tracked directories are watched one directory at a time, skipping hidden, excluded, and ignored subtrees, instead of with a recursive OS watch that spent watches on `node_modules` and would descend into other filesystems; watch failures (e.g. inotify's limit) are reported
 - Tracked files are opened without following symbolic links, and without blocking on FIFOs; a link or other non-regular file at a tracked path is a violation, replaced by a regular file without touching the link's target or copying its permissions
 - `atomic_write` never opens an existing temp file, so a link planted at the predictable temp name can't redirect a write
 - Replacing a live file checks it is unchanged just before the rename, so an edit made while the daemon was inspecting it isn't overwritten
