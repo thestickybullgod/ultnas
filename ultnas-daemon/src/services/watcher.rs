@@ -64,6 +64,7 @@ use tracing::{debug, error, info, warn};
 use ultnas_core::{
     covering_dir, hash_bytes,
     invisible::{classify_change, Change},
+    ipc::WatcherStatus,
     read_live, ApprovalMode, ContentId, Live, Policy, Record, TrackedDir, TrackedFile, Vault,
 };
 
@@ -76,11 +77,15 @@ pub const FALLBACK_POLL: Duration = Duration::from_secs(30);
 /// Events buffered between batches; beyond this, a full scan replaces them.
 const EVENT_QUEUE: usize = 4096;
 
+/// The watcher's live state, for `ultnas daemon status`.
+pub type SharedWatcherStatus = Arc<Mutex<WatcherStatus>>;
+
 pub struct WatcherService {
     vault: Arc<Vault>,
     guard: Arc<Mutex<IntegrityGuard>>,
     policy: Arc<Policy>,
     full_scan_interval: Duration,
+    status: SharedWatcherStatus,
 }
 
 /// What one pass of the service checks.
@@ -119,12 +124,22 @@ impl WatcherService {
         policy: Arc<Policy>,
         full_scan_interval: Duration,
     ) -> Self {
+        let status = Arc::new(Mutex::new(WatcherStatus {
+            mode: "starting".into(),
+            ..Default::default()
+        }));
         Self {
             vault,
             guard,
             policy,
             full_scan_interval,
+            status,
         }
+    }
+
+    /// A handle to the live state this service keeps up to date.
+    pub fn status_handle(&self) -> SharedWatcherStatus {
+        self.status.clone()
     }
 
     /// Main service loop.
@@ -163,6 +178,13 @@ impl WatcherService {
             FALLBACK_POLL
         };
 
+        lock(&self.status).mode = if watches.is_some() {
+            "events"
+        } else {
+            "polling"
+        }
+        .into();
+
         let mut interval = tokio::time::interval(period);
         let mut known = Known::default();
         loop {
@@ -178,6 +200,7 @@ impl WatcherService {
                 }
             };
             debug!("WatcherService: {:?}", job);
+            let full = matches!(job, Job::Full);
 
             let (vault, guard, policy) =
                 (self.vault.clone(), self.guard.clone(), self.policy.clone());
@@ -191,6 +214,16 @@ impl WatcherService {
                     known = tracked;
                     if let (Some(w), Some(r)) = (watches.as_mut(), roots.as_ref()) {
                         w.sync(wanted_watches(r, &known));
+                    }
+                    let mut st = lock(&self.status);
+                    st.tracked_files = known.files.len();
+                    st.tracked_dirs = known.dirs.len();
+                    if let Some(w) = watches.as_ref() {
+                        st.watched_dirs = w.dirs.len();
+                        st.unwatchable_dirs = w.failed;
+                    }
+                    if full {
+                        st.last_full_scan = Some(chrono::Utc::now());
                     }
                 }
                 Ok(None) => {}

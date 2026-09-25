@@ -15,7 +15,7 @@ mod logging;
 mod services;
 use services::{
     integrity_guard::{IntegrityGuard, RestoreOrder},
-    ipc::IpcServer,
+    ipc::{IpcServer, StatusSources},
     policy_enforcer::PolicyEnforcer,
     scheduler::Scheduler,
     vault_lock::VaultLock,
@@ -194,17 +194,17 @@ async fn main() -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
     // WatcherService
-    {
-        let v2 = vault.clone();
-        let g2 = guard.clone();
-        let p2 = policy.clone();
-        let scan_interval = args.scan_interval_secs.max(1);
-        tokio::spawn(async move {
-            WatcherService::new(v2, g2, p2, Duration::from_secs(scan_interval))
-                .run()
-                .await;
-        });
-    }
+    let watcher_status = {
+        let watcher = WatcherService::new(
+            vault.clone(),
+            guard.clone(),
+            policy.clone(),
+            Duration::from_secs(args.scan_interval_secs.max(1)),
+        );
+        let status = watcher.status_handle();
+        tokio::spawn(watcher.run());
+        status
+    };
 
     // Scheduler
     {
@@ -222,13 +222,17 @@ async fn main() -> Result<()> {
         });
     }
 
-    // IpcServer
+    // IpcServer — the endpoint is derived from the canonical vault path,
+    // as the CLI derives it.
     {
-        let v2 = vault.clone();
-        let sd = shutdown_tx.clone();
-        tokio::spawn(async move {
-            IpcServer::new(v2.root().to_path_buf(), sd).run().await;
-        });
+        let sources = StatusSources {
+            vault: std::fs::canonicalize(vault.root())?,
+            started_at: chrono::Utc::now(),
+            guard: guard.clone(),
+            cache: cache.clone(),
+            watcher: watcher_status,
+        };
+        tokio::spawn(IpcServer::new(sources, shutdown_tx.clone()).run());
     }
 
     tokio::select! {

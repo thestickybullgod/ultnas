@@ -74,15 +74,19 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use ultnas_core::{
-    hash_bytes, invisible, read_live, recreate_file, rewrite_file, ApprovalMode, ContentId,
-    Journal, JournalEntry, JournalOp, Live, QuarantineChange, QuarantineFold, TrackedDir,
-    TrackedFile, UltnasCoreError, Vault, MAX_ADOPT_BYTES,
+    hash_bytes, invisible,
+    ipc::{AlertRecord, JournalHealth},
+    read_live, recreate_file, rewrite_file, ApprovalMode, ContentId, Journal, JournalEntry,
+    JournalOp, Live, QuarantineChange, QuarantineFold, TrackedDir, TrackedFile, UltnasCoreError,
+    Vault, MAX_ADOPT_BYTES,
 };
 
 use super::verified_cache::SharedCache;
 
 /// Upper bound on journal entries held in memory while the journal is unwritable.
 const MAX_PENDING_JOURNAL: usize = 1024;
+/// Alerts kept for `ultnas daemon status`.
+const RECENT_ALERTS: usize = 20;
 
 /// Lock a std mutex, recovering from poisoning. A panic in one scan must not
 /// take the integrity pipeline down for the rest of the daemon's life.
@@ -94,9 +98,7 @@ pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Advisory notifications. The journal, not this channel, is the record of
 /// what happened, so alerts are sent with `try_send` and may be dropped.
-// Fields are only read through `Debug` by the alert logger until IPC
-// subscribers land (v0.3); dead-code analysis ignores derived `Debug`.
-#[allow(dead_code)]
+/// The newest are also kept for `ultnas daemon status`.
 #[derive(Debug, Clone)]
 pub enum IntegrityAlert {
     ViolationDetected {
@@ -328,6 +330,7 @@ pub struct IntegrityGuard {
     pending_journal: VecDeque<JournalEntry>,
     dropped_journal_entries: u64,
     dropped_alerts: u64,
+    recent_alerts: VecDeque<AlertRecord>,
     violation_threshold: u32,
     violation_window: Duration,
     debounce: Duration,
@@ -362,6 +365,7 @@ impl IntegrityGuard {
             pending_journal: VecDeque::new(),
             dropped_journal_entries: 0,
             dropped_alerts: 0,
+            recent_alerts: VecDeque::new(),
             violation_threshold,
             violation_window: Duration::from_secs(violation_window_secs),
             debounce: Duration::from_millis(debounce_ms),
@@ -400,6 +404,19 @@ impl IntegrityGuard {
 
     pub fn dropped_alerts(&self) -> u64 {
         self.dropped_alerts
+    }
+
+    pub fn journal_health(&self) -> JournalHealth {
+        JournalHealth {
+            degraded: self.is_degraded(),
+            buffered_entries: self.pending_journal.len(),
+            lost_entries: self.dropped_journal_entries,
+        }
+    }
+
+    /// The newest alerts, oldest first.
+    pub fn recent_alerts(&self) -> Vec<AlertRecord> {
+        self.recent_alerts.iter().cloned().collect()
     }
 
     /// Called by WatcherService for every sealed record that fails
@@ -1061,6 +1078,7 @@ impl IntegrityGuard {
     }
 
     fn alert(&mut self, alert: IntegrityAlert) {
+        self.remember(&alert);
         if self.alert_tx.try_send(alert).is_err() {
             self.dropped_alerts += 1;
             if self.dropped_alerts.is_power_of_two() {
@@ -1071,6 +1089,40 @@ impl IntegrityGuard {
                 );
             }
         }
+    }
+}
+
+impl IntegrityGuard {
+    fn remember(&mut self, alert: &IntegrityAlert) {
+        use IntegrityAlert::*;
+        let (kind, detail) = match alert {
+            ViolationDetected { path, count } => {
+                ("violation", format!("{} (count {count})", path.display()))
+            }
+            RestoreSucceeded { path, source } => (
+                "restored",
+                format!("{} from {}", path.display(), source.as_str()),
+            ),
+            RestoreFailed { path, reason } => {
+                ("restore_failed", format!("{}: {reason}", path.display()))
+            }
+            Sanitized { path, removed } => (
+                "sanitized",
+                format!("{} ({removed} character(s) removed)", path.display()),
+            ),
+            VersionAccepted { path } => ("accepted", path.display().to_string()),
+            VersionPending { path } => ("pending", path.display().to_string()),
+            NamespaceQuarantined { namespace } => ("quarantined", namespace.clone()),
+            JournalDegraded { reason } => ("journal_degraded", reason.clone()),
+        };
+        if self.recent_alerts.len() >= RECENT_ALERTS {
+            self.recent_alerts.pop_front();
+        }
+        self.recent_alerts.push_back(AlertRecord {
+            at: Utc::now(),
+            kind: kind.into(),
+            detail,
+        });
     }
 }
 

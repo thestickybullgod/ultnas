@@ -85,6 +85,6 @@ fn main() -> Result<()> {
         Commands::Tracked => track::list(&cli.vault),
         Commands::Policy(cmd) => policy::run(&cli.vault, cmd),
         Commands::Integrity(cmd) => integrity::run(&cli.vault, cmd),
-        Commands::Daemon(cmd) => daemon::run(cmd),
+        Commands::Daemon(cmd) => daemon::run(&cli.vault, cmd),
     }
 }

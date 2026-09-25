@@ -64,6 +64,13 @@ pub enum UltnasCoreError {
     #[error("{0} changed while it was being replaced")]
     ChangedDuringWrite(PathBuf),
 
+    /// No daemon is listening on the vault's IPC endpoint.
+    #[error("no daemon is running for this vault (nothing listening on {0})")]
+    DaemonNotRunning(String),
+
+    #[error("IPC error: {0}")]
+    Ipc(String),
+
     /// Emitted by IntegrityGuard when all restore tiers are exhausted.
     #[error("restore failed for {id}: {reason}")]
     RestoreFailed { id: String, reason: String },

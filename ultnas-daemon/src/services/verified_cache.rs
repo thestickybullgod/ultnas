@@ -132,6 +132,13 @@ impl VerifiedCache {
     pub fn used_bytes(&self) -> u64 {
         self.used_bytes
     }
+    pub fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+    /// Number of cached records.
+    pub fn entries(&self) -> usize {
+        self.slots.len()
+    }
 }
 
 /// The cache as shared between the warm-up task and `IntegrityGuard`.

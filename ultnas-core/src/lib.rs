@@ -28,6 +28,7 @@
 pub mod address;
 pub mod error;
 pub mod invisible;
+pub mod ipc;
 pub mod journal;
 pub mod live;
 pub mod namespace;

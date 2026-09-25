@@ -68,7 +68,7 @@ Ultnas is a three-tier system: a **core library**, a **CLI**, and a **background
 | `track` / `untrack` | Protect a live text file (or, with `--recursive`, a directory) in place, or stop |
 | `approve` | Promote a tracked file's pending edit to its stable version |
 | `tracked` | List tracked files and their status |
-| `daemon status` | Query the running daemon over IPC |
+| `daemon status` / `daemon stop` | Show the running daemon's live state (`--json` for raw), or stop it, over IPC |
 
 ### ultnas-daemon Services
 
@@ -169,18 +169,32 @@ Once sealed, record content is immutable. Metadata mutations are journaled.
 
 ## IPC Protocol
 
-Newline-delimited JSON over a Unix socket at `<vault-root>/.ultnas.sock`:
+Newline-delimited JSON over a Unix socket at `<vault-root>/.ultnas.sock`
+(mode `0600`), or on Windows the named pipe `\\.\pipe\ultnas-<hash of vault path>`,
+which refuses remote clients. The daemon and the CLI both derive the
+endpoint from the canonical vault path. One request per line, one response
+per line; lines are capped at 1 MiB.
 
 ```json
 // Request
-{ "id": "uuid-v4", "command": "status", "params": {} }
+{ "id": "1234-1727300000000000000", "command": "status", "params": null }
 
 // Success response
-{ "id": "uuid-v4", "ok": true, "data": { "uptime_secs": 3600 } }
+{ "id": "1234-1727300000000000000", "ok": true, "data": { "pid": 1234, "journal": { "degraded": false } } }
 
 // Error response
-{ "id": "uuid-v4", "ok": false, "error": { "code": "VAULT_LOCKED", "message": "..." } }
+{ "id": "1234-1727300000000000000", "ok": false, "error": { "code": "UNKNOWN_COMMAND", "message": "..." } }
 ```
+
+| Command | Answer |
+|---|---|
+| `status` | `DaemonStatus`: PID, version, start time, journal health (degraded, buffered and lost entries), dropped alerts, quarantined namespaces, watcher mode and watch counts, tracked counts, last full scan, cache use, the 20 most recent alerts |
+| `stop` | `{ "stopping": true }`, then the daemon exits and releases the vault lock |
+
+The vault lock means only one daemon can own a vault's endpoint: it clears a
+stale socket before binding, and on Windows claims the pipe as its first
+instance, so a squatter makes it fail rather than share. If the socket path
+would exceed the Unix limit (about 100 bytes), IPC is disabled with a warning.
 
 ---
 
@@ -193,7 +207,7 @@ Newline-delimited JSON over a Unix socket at `<vault-root>/.ultnas.sock`:
 | Record integrity | BLAKE3 hash verification on every read |
 | Seal authenticity | Ed25519 signature verification |
 | Policy integrity | Policy file hash embedded in every seal |
-| IPC authentication | Socket file permissions `0600`, owned by vault owner |
+| IPC authentication | Unix: socket permissions `0600`, owned by the vault owner. Windows: named pipe, local clients only |
 
 ---
 
