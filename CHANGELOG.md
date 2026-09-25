@@ -42,3 +42,4 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Escalated records re-escalated on every scan, and lifts were immediately undone
 - Journal write failures were silently discarded; a poisoned journal lock disabled the journal permanently
 - CLI used `chrono` without declaring the dependency
+- A second daemon silently overwrote `.ultnas-lock` and ran against the same vault; the lock is now an OS file lock (MSRV raised to 1.89 for `File::try_lock`)

@@ -8,7 +8,7 @@
 
 | Tool | Required Version | Install |
 |---|---|---|
-| Rust (stable) | ≥ 1.80 | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| Rust (stable) | ≥ 1.89 | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | Git | ≥ 2.40 | OS package manager |
 | clippy | latest | `rustup component add clippy` |
 | rustfmt | latest | `rustup component add rustfmt` |

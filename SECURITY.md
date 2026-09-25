@@ -16,7 +16,7 @@ Ultnas provides **local, user-controlled** security guarantees. It is not a netw
 | Undetected tampering of archived records | ContentId mismatch → `IntegrityFailure` error |
 | Unauthorized record sealing | Ed25519 key required; private key never stored by Ultnas |
 | Policy drift at seal time | Policy file hash embedded in every seal |
-| Concurrent write corruption | Advisory vault lock (`.ultnas-lock`) |
+| Concurrent write corruption | OS file lock on `.ultnas-lock`, one daemon per vault |
 | Partial writes on crash | Atomic `write → fsync → rename` for all vault writes |
 
 ### What Ultnas Does NOT Protect Against

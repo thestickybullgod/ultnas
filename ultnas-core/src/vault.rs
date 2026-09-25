@@ -137,7 +137,7 @@ impl Vault {
         let mut out = vec![];
         for entry in fs::read_dir(self.root.join("records"))? {
             let path = entry?.path();
-            if path.extension().map_or(true, |ext| ext != "json") {
+            if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
             let Ok(raw) = fs::read(&path) else { continue };

@@ -14,7 +14,8 @@ use ultnas_core::{Journal, Vault};
 mod services;
 use services::{
     integrity_guard::IntegrityGuard, ipc::IpcServer, policy_enforcer::PolicyEnforcer,
-    scheduler::Scheduler, verified_cache::VerifiedCache, watcher::WatcherService,
+    scheduler::Scheduler, vault_lock::VaultLock, verified_cache::VerifiedCache,
+    watcher::WatcherService,
 };
 
 #[derive(Parser)]
@@ -49,11 +50,18 @@ async fn main() -> Result<()> {
 
     info!("ultnasd starting — vault: {}", args.vault.display());
 
-    let lock_path = args.vault.join(".ultnas-lock");
-    std::fs::write(&lock_path, std::process::id().to_string())?;
-    info!("vault lock acquired (PID {})", std::process::id());
-
+    // Open (and so validate) the vault before creating the lock file in it,
+    // but lock before the journal or anything else can write.
     let vault = Arc::new(Vault::open(&args.vault)?);
+
+    // Held until main returns; the OS also releases it if we crash.
+    let vault_lock = VaultLock::acquire(&args.vault)?;
+    info!(
+        "vault lock acquired: {} (PID {})",
+        vault_lock.path().display(),
+        std::process::id()
+    );
+
     let journal = Arc::new(Journal::open(&args.vault.join("journal.log"))?);
 
     // ── Fix 1: warm VerifiedCache off the tokio executor via spawn_blocking ──
@@ -156,7 +164,7 @@ async fn main() -> Result<()> {
         _ = shutdown_rx.recv()      => { info!("shutdown requested via IPC"); }
     }
 
-    let _ = std::fs::remove_file(&lock_path);
+    drop(vault_lock);
     info!("vault lock released — goodbye");
     Ok(())
 }

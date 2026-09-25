@@ -43,7 +43,7 @@ ultnas/
 ## Quick Start
 
 ```bash
-# Prerequisites: Rust 1.80+
+# Prerequisites: Rust 1.89+
 git clone https://github.com/thestickybullgod/ultnas.git
 cd ultnas
 cargo build --workspace --release

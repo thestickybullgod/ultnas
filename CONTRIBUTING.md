@@ -38,7 +38,7 @@ All contributors must abide by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 | Tool | Version | Install |
 |---|---|---|
-| Rust (stable) | ≥ 1.80 | `rustup update stable` |
+| Rust (stable) | ≥ 1.89 | `rustup update stable` |
 | clippy | latest | `rustup component add clippy` |
 | rustfmt | latest | `rustup component add rustfmt` |
 | cargo-nextest | optional | `cargo install cargo-nextest` |

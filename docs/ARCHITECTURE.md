@@ -151,7 +151,7 @@ Once sealed, record content is immutable. Metadata mutations are journaled.
 ├── journal.log         # Append-only operation journal (newline-delimited JSON)
 ├── seals/              # Detached seal files
 │   └── <ContentId>.seal
-└── .ultnas-lock        # Advisory lock file (PID of owner)
+└── .ultnas-lock        # OS-locked while a daemon owns the vault (holds owner PID)
 ```
 
 ---
@@ -178,7 +178,7 @@ Newline-delimited JSON over a Unix socket at `<vault-root>/.ultnas.sock`:
 | Boundary | Mechanism |
 |---|---|
 | Process isolation | CLI and daemon are separate OS processes |
-| Vault lock | Advisory `.ultnas-lock` prevents concurrent writers |
+| Vault lock | OS file lock on `.ultnas-lock` (flock / LockFileEx) allows one daemon per vault |
 | Record integrity | BLAKE3 hash verification on every read |
 | Seal authenticity | Ed25519 signature verification |
 | Policy integrity | Policy file hash embedded in every seal |
