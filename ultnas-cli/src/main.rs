@@ -17,7 +17,7 @@ use commands::{add, daemon, init, inspect, integrity, ls, policy, purge, verify}
 )]
 struct Cli {
     /// Path to the vault root (defaults to current directory)
-    #[arg(short, long, default_value = ".", global = true)]
+    #[arg(long, default_value = ".", global = true)]
     vault: std::path::PathBuf,
 
     /// Enable verbose logging
