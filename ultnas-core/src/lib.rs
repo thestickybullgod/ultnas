@@ -31,6 +31,7 @@ pub mod invisible;
 pub mod ipc;
 pub mod journal;
 pub mod live;
+pub mod mirror;
 pub mod namespace;
 pub mod policy;
 pub mod record;
@@ -67,6 +68,9 @@ pub use vault::{Vault, VaultManifest};
 
 // live files
 pub use live::{read_live, recreate_file, rewrite_file, Live};
+
+// mirror
+pub use mirror::Mirror;
 
 // tracking
 pub use tracking::{

@@ -74,6 +74,7 @@ violation_window_secs     = 300   # counts reset after this much quiet
 escalate_after_restores   = 3     # restores before the namespace is quarantined
 restore_source            = "memory_then_store"   # "memory" | "store" | "memory_then_store"
 approval                  = "automatic"           # "automatic" | "approved"
+mirror                    = "/mnt/backup/ultnas"  # optional second copy (see below)
 
 [[namespaces]]
 path     = "legal"
@@ -87,6 +88,21 @@ policy's values.
 A write that arrives with invisible characters is never trusted as an edit.
 If stripping them leaves visible changes too, the result is held as pending
 whatever the `approval` setting, and needs `ultnas approve <file>`.
+
+### Mirror: a second copy
+
+A sealed record's object in the vault *is* the thing being protected, so if
+it is damaged while not in the daemon's memory cache, there is nothing to
+restore it from, and the namespace is quarantined instead. Set `mirror` (or
+start `ultnas daemon` with `--mirror <dir>`) to keep a second copy of every
+sealed object and tracked-file version in another directory, ideally on
+another disk: the daemon warns if it's on the same filesystem as the vault.
+
+Every full scan copies what the mirror lacks, and replaces damaged copies,
+from verified vault bytes. Restores try it last, after memory (and, for
+tracked files, the vault), and like every source it is hash-checked, so a
+damaged mirror copy is never used. A relative path is relative to the vault
+root.
 
 ### Getting started: `ultnas setup`
 

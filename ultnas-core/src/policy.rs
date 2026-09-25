@@ -66,6 +66,7 @@ fn default_conflict() -> ConflictStrategy {
 /// restore_source               = "memory_then_store"
 /// escalate_after_restores      = 3
 /// approval                     = "automatic"   # or "approved"
+/// mirror                       = "/mnt/backup/ultnas-mirror"
 /// log_each_violation           = true
 /// cache_budget_bytes           = 268435456   # 256 MiB
 /// ```
@@ -120,6 +121,13 @@ pub struct IntegrityPolicy {
     /// file. Overridable per namespace. Default: `"automatic"`.
     #[serde(default)]
     pub approval: ApprovalMode,
+
+    /// A second copy of every sealed object and tracked-file version, used
+    /// when a restore finds nothing in memory (or, for tracked files, in the
+    /// vault). Relative paths are relative to the vault root. Best on
+    /// another disk. Default: none.
+    #[serde(default)]
+    pub mirror: Option<std::path::PathBuf>,
 }
 
 /// How clean edits to tracked files become the stable (restore) version.
@@ -154,6 +162,7 @@ impl Default for IntegrityPolicy {
             log_each_violation: true,
             cache_budget_bytes: default_cache_budget(),
             approval: ApprovalMode::default(),
+            mirror: None,
         }
     }
 }

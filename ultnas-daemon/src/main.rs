@@ -47,6 +47,10 @@ struct Args {
     /// to file-system events
     #[arg(long, default_value_t = 300)]
     scan_interval_secs: u64,
+    /// Mirror directory: a second copy of every sealed object and tracked
+    /// version, used when a restore finds nothing else (overrides the policy)
+    #[arg(long)]
+    mirror: Option<PathBuf>,
     #[arg(short, long)]
     verbose: bool,
     /// Directory for the daily-rotated log file (default: <vault>/logs)
@@ -80,6 +84,23 @@ fn load_policy(explicit: Option<&Path>, vault: &Vault) -> Result<Policy> {
         Policy::from_toml(&raw).with_context(|| format!("invalid policy {}", path.display()))?;
     info!("policy loaded from {}", path.display());
     Ok(policy)
+}
+
+/// Whether two paths are on one filesystem (Unix; elsewhere unknown: false).
+fn same_device(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!(
+            (std::fs::metadata(a), std::fs::metadata(b)),
+            (Ok(x), Ok(y)) if x.dev() == y.dev()
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
 }
 
 #[tokio::main]
@@ -181,6 +202,26 @@ async fn main() -> Result<()> {
             quarantined.len(),
             quarantined.join(", ")
         );
+    }
+    let mut guard = guard;
+    let mirror_path = args
+        .mirror
+        .clone()
+        .or_else(|| ip.mirror.as_ref().map(|p| vault.root().join(p)));
+    if let Some(path) = mirror_path {
+        let mirror = Arc::new(
+            ultnas_core::Mirror::open(&path)
+                .with_context(|| format!("opening mirror {}", path.display()))?,
+        );
+        info!("mirror: {}", path.display());
+        if same_device(vault.root(), &path) {
+            warn!(
+                "mirror {} is on the same filesystem as the vault — it won't survive a \
+                 disk failure; put it on another disk",
+                path.display()
+            );
+        }
+        guard.set_mirror(mirror);
     }
     let guard = Arc::new(Mutex::new(guard));
 

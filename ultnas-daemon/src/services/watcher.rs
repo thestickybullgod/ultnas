@@ -34,6 +34,10 @@
 //! in automatic mode; in approved mode the deletion is a violation, like any
 //! other unapproved change, and the file is recreated.
 //!
+//! With a mirror configured, every full scan also copies any sealed object
+//! or tracked-file version it lacks (or holds damaged) into it, and an
+//! event-verified sealed record is mirrored at once.
+//!
 //! Sealed records are event-driven too: the vault's `objects/`, each
 //! `objects/xx/` prefix directory, and `records/` are watched, and an event
 //! names the content id it concerns, so only that record is verified.
@@ -432,8 +436,13 @@ fn run_job(
 
     match job {
         Job::Full => {
-            scan_sealed(vault, guard);
+            let sealed = scan_sealed(vault, guard);
             check_tracked(guard, policy, tracked.iter());
+            let versions = tracked
+                .iter()
+                .flat_map(|t| [Some(t.stable), t.pending])
+                .flatten();
+            backfill_mirror(vault, guard, sealed.into_iter().chain(versions));
             for dir in &dirs {
                 adopt_new(guard, &dirs, &files, dir.candidates());
             }
@@ -446,11 +455,12 @@ fn run_job(
                         .filter(|p| p.parent() == Some(r.objects_dir.as_path()) && p.is_dir())
                         .cloned(),
                 );
-                for id in sealed_hits(r, &hits) {
-                    if let Ok(record) = vault.get_record(&id) {
-                        verify_sealed(vault, guard, &record);
-                    }
-                }
+                let good = sealed_hits(r, &hits).into_iter().filter(|id| {
+                    vault
+                        .get_record(id)
+                        .is_ok_and(|record| verify_sealed(vault, guard, &record))
+                });
+                backfill_mirror(vault, guard, good.collect::<Vec<_>>());
             }
             // A change under tracked/ may have added files: first-check them.
             let set_changed = roots.is_some_and(|r| {
@@ -516,24 +526,59 @@ fn scan(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
 }
 
 /// Report every sealed record whose object no longer matches its ContentId
-/// (including missing objects).
-fn scan_sealed(vault: &Vault, guard: &Mutex<IntegrityGuard>) {
+/// (including missing objects), and return the ids of the good ones.
+fn scan_sealed(vault: &Vault, guard: &Mutex<IntegrityGuard>) -> Vec<ContentId> {
     let records = match vault.all_records() {
         Ok(records) => records,
         Err(e) => {
             warn!("WatcherService: could not list records: {}", e);
-            return;
+            return vec![];
         }
     };
-    for record in &records {
-        verify_sealed(vault, guard, record);
+    records
+        .iter()
+        .filter(|r| verify_sealed(vault, guard, r))
+        .map(|r| r.id)
+        .collect()
+}
+
+/// Copy each of `ids` into the mirror, if one is configured and lacks a good
+/// copy. Only verified vault bytes are copied.
+fn backfill_mirror(
+    vault: &Vault,
+    guard: &Mutex<IntegrityGuard>,
+    ids: impl IntoIterator<Item = ContentId>,
+) {
+    let Some(mirror) = lock(guard).mirror() else {
+        return;
+    };
+    let mut copied = 0usize;
+    for id in ids {
+        if mirror.has_valid(&id) {
+            continue;
+        }
+        let Ok(data) = vault.read_verified(&id) else {
+            continue;
+        };
+        match mirror.store(&id, &data) {
+            Ok(()) => copied += 1,
+            Err(e) => warn!("WatcherService: could not mirror {}: {}", id, e),
+        }
+    }
+    if copied > 0 {
+        info!(
+            "WatcherService: copied {} object(s) to the mirror at {}",
+            copied,
+            mirror.root().display()
+        );
     }
 }
 
-/// Report `record` if it is sealed and its object no longer matches.
-fn verify_sealed(vault: &Vault, guard: &Mutex<IntegrityGuard>, record: &Record) {
+/// Whether `record` is sealed and intact. Reports it if it's sealed and
+/// its object no longer matches.
+fn verify_sealed(vault: &Vault, guard: &Mutex<IntegrityGuard>, record: &Record) -> bool {
     if !record.is_sealed() {
-        return;
+        return false;
     }
     if let Err(e) = vault.verify(&record.id) {
         warn!(
@@ -545,7 +590,9 @@ fn verify_sealed(vault: &Vault, guard: &Mutex<IntegrityGuard>, record: &Record) 
             namespace: record.namespace.as_str(),
             target: Target::Object,
         });
+        return false;
     }
+    true
 }
 
 /// Classify each tracked file's current contents against its baseline.
@@ -1156,6 +1203,62 @@ mod tests {
         ]
         .into();
         assert_eq!(sealed_hits(&r, &hits), [id].into());
+    }
+
+    #[test]
+    fn sealed_record_is_restored_from_the_mirror_when_not_cached() {
+        let f = fixture(ApprovalMode::Automatic, true);
+        let content = b"archived\n";
+        let mut record = RecordBuilder::new(NamespacePath::parse("archive").unwrap(), "r")
+            .build(content)
+            .unwrap();
+        record
+            .seal_record("pk".into(), "sig".into(), hash_bytes(b"policy"))
+            .unwrap();
+        f.vault.write_record(&record, content).unwrap();
+
+        let mirror_dir = TempDir::new().unwrap();
+        let mirror = Arc::new(ultnas_core::Mirror::open(mirror_dir.path()).unwrap());
+        // Nothing cached; threshold 1, so the first violation restores.
+        let (tx, rx) = mpsc::channel(64);
+        std::mem::forget(rx);
+        let mut guard = IntegrityGuard::new(
+            f.vault.clone(),
+            f.journal.clone(),
+            Arc::new(Mutex::new(VerifiedCache::new(0))),
+            tx,
+            1,
+            300,
+            0,
+            true,
+            5,
+            RestoreOrder::MemoryThenStore,
+        );
+        guard.set_mirror(mirror.clone());
+        let guard = Mutex::new(guard);
+
+        // A full scan fills the mirror with the sealed object and the
+        // tracked file's version.
+        scan(&f.vault, &guard, &f.policy);
+        assert!(mirror.has_valid(&record.id));
+        assert!(mirror.has_valid(&f.stable));
+
+        fs::write(f.vault.object_path(&record.id), b"tampered").unwrap();
+        scan(&f.vault, &guard, &f.policy);
+        f.vault.verify(&record.id).unwrap();
+        let entries: Vec<_> = f.journal.iter().unwrap().flatten().collect();
+        assert!(entries
+            .iter()
+            .any(|e| e.op == JournalOp::IntegrityRestore
+                && e.detail.as_deref() == Some("source=mirror")));
+
+        // A damaged mirror copy is never used, and the next scan repairs it.
+        let hex = record.id.to_hex();
+        let copy = mirror_dir.path().join("objects").join(&hex[..2]).join(&hex);
+        fs::write(&copy, b"rotten").unwrap();
+        assert!(!mirror.has_valid(&record.id));
+        scan(&f.vault, &guard, &f.policy);
+        assert!(mirror.has_valid(&record.id));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

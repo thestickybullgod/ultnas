@@ -38,6 +38,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - `ultnas setup`: an interactive checklist of recommended places to protect (shell startup files, SSH and Git config, script and source directories, `~/.config`, and `/etc` as root), showing only what exists, each group in its own namespace; `--list` and `--yes` for scripting
 - Sealed records are watched too: events under the vault's `objects/` and `records/` name the content id they concern, so a tampered sealed object is verified (and, at the threshold, restored) at once instead of at the next full scan
 - IPC between CLI and daemon: newline-delimited JSON over `<vault>/.ultnas.sock` (mode 0600), or a local-only named pipe on Windows. `ultnas daemon status` shows live state (journal health, dropped alerts, quarantines, watcher mode and watch counts, tracked counts, last full scan, cache use, recent alerts; `--json` for raw), and `ultnas daemon stop` shuts the daemon down cleanly
+- Mirror: `mirror = "<dir>"` under `[global.integrity]` (or `ultnasd --mirror`) keeps a second, hash-checked copy of every sealed object and tracked-file version. Full scans fill and repair it; restores fall back to it last, so a damaged sealed record that isn't cached is repaired instead of quarantined. The daemon warns if the mirror shares the vault's filesystem
 
 ### Changed
 - A write that arrived with invisible characters and also changed visible text is held as pending, even in `automatic` mode, so a clean-looking attacker edit can't slip in with it

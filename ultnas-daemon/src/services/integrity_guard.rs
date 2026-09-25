@@ -51,7 +51,8 @@
 //! For a tracked file, both the VerifiedCache and the vault's copy of the
 //! stable version are independent of the live file, tried in the order
 //! `restore_source` sets. For a sealed object, the object *is* the file being
-//! restored, so only the cache can serve it.
+//! restored, so the vault can't serve it. Either way, a configured mirror
+//! (`ultnas_core::Mirror`) is tried last. Every source is hash-checked.
 //!
 //! ## Journal failures (degraded mode)
 //! If the journal can't be written, the guard keeps detecting and keeps
@@ -80,6 +81,8 @@ use ultnas_core::{
     JournalOp, Live, QuarantineChange, QuarantineFold, TrackedDir, TrackedFile, UltnasCoreError,
     Vault, MAX_ADOPT_BYTES,
 };
+
+use ultnas_core::Mirror;
 
 use super::verified_cache::SharedCache;
 
@@ -135,6 +138,7 @@ pub enum IntegrityAlert {
 pub enum RestoreSource {
     MemoryCache,
     VaultStore,
+    Mirror,
 }
 
 impl RestoreSource {
@@ -142,6 +146,7 @@ impl RestoreSource {
         match self {
             RestoreSource::MemoryCache => "memory_cache",
             RestoreSource::VaultStore => "vault_store",
+            RestoreSource::Mirror => "mirror",
         }
     }
 }
@@ -337,6 +342,7 @@ pub struct IntegrityGuard {
     auto_restore: bool,
     escalate_after_restores: u32,
     restore_order: RestoreOrder,
+    mirror: Option<Arc<Mirror>>,
 }
 
 impl IntegrityGuard {
@@ -372,6 +378,7 @@ impl IntegrityGuard {
             auto_restore,
             escalate_after_restores,
             restore_order,
+            mirror: None,
         };
         guard.sync_quarantine();
         guard
@@ -391,6 +398,15 @@ impl IntegrityGuard {
                 );
             }
         }
+    }
+
+    /// Use `mirror` as the last restore source for everything.
+    pub fn set_mirror(&mut self, mirror: Arc<Mirror>) {
+        self.mirror = Some(mirror);
+    }
+
+    pub fn mirror(&self) -> Option<Arc<Mirror>> {
+        self.mirror.clone()
     }
 
     pub fn quarantined(&self) -> Vec<String> {
@@ -800,6 +816,12 @@ impl IntegrityGuard {
                 Err(e) => debug!("IntegrityGuard: vault copy of {} unusable: {}", id, e),
             }
         }
+        if let Some(mirror) = &self.mirror {
+            match mirror.read_verified(id) {
+                Ok(data) => return Some((data.into(), RestoreSource::Mirror)),
+                Err(e) => debug!("IntegrityGuard: mirror copy of {} unusable: {}", id, e),
+            }
+        }
         None
     }
 
@@ -948,10 +970,11 @@ impl IntegrityGuard {
             }
             None => Err(UltnasCoreError::RestoreFailed {
                 id: v.id.to_hex(),
-                reason: if tracked {
-                    "no verified copy in memory or the vault".into()
-                } else {
-                    "not in the memory cache, and a sealed object has no independent copy".into()
+                reason: match (tracked, self.mirror.is_some()) {
+                    (true, true) => "no verified copy in memory, the vault, or the mirror".into(),
+                    (true, false) => "no verified copy in memory or the vault".into(),
+                    (false, true) => "no verified copy in memory or the mirror".into(),
+                    (false, false) => "not in the memory cache, and no mirror is configured".into(),
                 },
             }),
         };
