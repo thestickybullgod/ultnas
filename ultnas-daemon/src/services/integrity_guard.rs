@@ -303,7 +303,11 @@ impl QuarantineRegistry {
                     if self.unjournaled.get(&ns).is_some_and(|at| entry.ts >= *at) {
                         self.unjournaled.remove(&ns);
                     }
-                    lifted.push(ns);
+                    // A rotation's checkpoint restates old lifts; they aren't
+                    // new, so violation counts stay.
+                    if entry.detail.as_deref() != Some(ultnas_core::journal::CHECKPOINT) {
+                        lifted.push(ns);
+                    }
                 }
                 None => {}
             }
@@ -1254,6 +1258,59 @@ mod tests {
             1
         );
         assert_eq!(f.journal.count_op(&JournalOp::IntegrityRestore).unwrap(), 1);
+    }
+
+    #[test]
+    fn quarantine_survives_journal_rotation() {
+        let dir = TempDir::new().unwrap();
+        let vault = Arc::new(Vault::init(dir.path(), "t").unwrap());
+        let journal = Arc::new(
+            Journal::open(&dir.path().join("journal.log"))
+                .unwrap()
+                .with_rotation(ultnas_core::Rotation {
+                    max_bytes: 2000,
+                    keep: 2,
+                }),
+        );
+        let record = RecordBuilder::new(NamespacePath::parse("docs").unwrap(), "r")
+            .build(CONTENT)
+            .unwrap();
+        vault.write_record(&record, CONTENT).unwrap();
+        std::fs::write(vault.object_path(&record.id), b"tampered").unwrap();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut guard = IntegrityGuard::new(
+            vault.clone(),
+            journal.clone(),
+            Arc::new(Mutex::new(VerifiedCache::new(0))),
+            tx,
+            1,
+            300,
+            0,
+            true,
+            1,
+            RestoreOrder::MemoryThenStore,
+        );
+        let v = Violation {
+            id: record.id,
+            namespace: "docs".into(),
+            target: Target::Object,
+        };
+        // Restore fails (nothing cached), then the next attempt escalates.
+        guard.record_violation(v.clone());
+        guard.record_violation(v.clone());
+        assert_eq!(guard.quarantined(), vec!["docs".to_string()]);
+
+        // Enough further activity to rotate the journal, more than once.
+        for _ in 0..60 {
+            guard.record_violation(v.clone());
+        }
+        assert!(
+            !journal.archives().is_empty(),
+            "journal should have rotated"
+        );
+        guard.sync_quarantine();
+        assert_eq!(guard.quarantined(), vec!["docs".to_string()]);
+        assert!(journal.quarantined_namespaces().unwrap().contains("docs"));
     }
 
     #[test]

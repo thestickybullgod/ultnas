@@ -30,7 +30,7 @@ pub struct PurgeArgs {
 
 pub fn run(vault_root: &Path, args: PurgeArgs) -> Result<()> {
     let vault = Vault::open(vault_root)?;
-    let journal = Journal::open(&vault.root().join("journal.log"))?;
+    let journal = Journal::open_shared(&vault.root().join("journal.log"));
     let policy = match vault.load_policy(args.policy.as_deref())? {
         Some((policy, _)) => policy,
         None => Policy::default(),

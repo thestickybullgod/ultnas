@@ -34,6 +34,8 @@ version = 1           # Policy schema version. Required. Must be 1 for now.
 conflict              = "reject"    # "reject" | "version" | "replace"
 max_record_size_bytes = 104857600   # 100 MiB — omit for no limit
 require_seal_before_rotation = true
+journal_max_bytes     = 67108864    # rotate journal.log past 64 MiB (default)
+journal_keep          = 5           # rotated files kept: journal.log.1 … .5 (default)
 
 [[namespaces]]
 # Per-namespace rules. Multiple [[namespaces]] blocks allowed.
@@ -174,6 +176,16 @@ never count against it.
 | `replace` | Accept the new record; move previous version to `__ultnas__/replaced/` |
 
 ---
+
+## Journal Rotation
+
+`journal.log` records everything the daemon and CLI do. Once it passes
+`journal_max_bytes` (default 64 MiB), the daemon renames it to
+`journal.log.1`, shifts older ones up to `journal.log.<journal_keep>`
+(default 5, dropping anything older), and starts a new file. The new file
+begins with a checkpoint of the quarantine state, so quarantines and lifts
+carry over exactly. `ultnas integrity status` counts events in the current
+file only, and says so when older files exist.
 
 ## Retention Policies
 

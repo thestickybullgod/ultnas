@@ -487,7 +487,7 @@ fn journal(
     path: &Path,
     detail: &str,
 ) -> Result<()> {
-    let journal = Journal::open(&vault.root().join("journal.log"))?;
+    let journal = Journal::open_shared(&vault.root().join("journal.log"));
     journal.write(JournalEntry {
         ts: Utc::now(),
         op,

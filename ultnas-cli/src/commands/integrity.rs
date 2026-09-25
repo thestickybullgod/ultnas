@@ -51,7 +51,7 @@ fn cmd_status(vault_root: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let journal = Journal::open(&journal_path)?;
+    let journal = Journal::open_shared(&journal_path);
 
     let violations = journal.count_op(&JournalOp::WriteViolation)?;
     let restores = journal.count_op(&JournalOp::IntegrityRestore)?;
@@ -76,6 +76,15 @@ fn cmd_status(vault_root: &Path) -> Result<()> {
         active_quarantines
     );
     println!("╚══════════════════════════════════════════╝");
+    let archives = journal.archives();
+    if !archives.is_empty() {
+        println!(
+            "  Counts cover the current journal only; {} older rotated file(s) \
+             ({}.1 …) are not included. Quarantines are carried over.",
+            archives.len(),
+            journal_path.display()
+        );
+    }
 
     if active_quarantines > 0 {
         println!(
@@ -101,7 +110,7 @@ fn cmd_violations(vault_root: &Path, limit: usize) -> Result<()> {
         return Ok(());
     }
 
-    let journal = Journal::open(&journal_path)?;
+    let journal = Journal::open_shared(&journal_path);
     let relevant_ops = [
         JournalOp::WriteViolation,
         JournalOp::IntegrityRestoreIntent,
@@ -158,7 +167,7 @@ fn cmd_lift_quarantine(vault_root: &Path, namespace: &str, yes: bool) -> Result<
         println!("No journal found — nothing is quarantined.");
         return Ok(());
     }
-    let journal = Journal::open(&journal_path)?;
+    let journal = Journal::open_shared(&journal_path);
 
     let quarantined = journal.quarantined_namespaces()?;
     if !quarantined.contains(&namespace) {
@@ -213,7 +222,7 @@ fn cmd_restore_count(vault_root: &Path) -> Result<()> {
         println!("0 restores (no journal found).");
         return Ok(());
     }
-    let journal = Journal::open(&journal_path)?;
+    let journal = Journal::open_shared(&journal_path);
     let count = journal.count_op(&JournalOp::IntegrityRestore)?;
     println!("{} integrity restore(s) recorded in journal.", count);
     Ok(())

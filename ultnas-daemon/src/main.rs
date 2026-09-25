@@ -9,7 +9,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tracing::{info, warn};
-use ultnas_core::{Journal, Policy, Vault};
+use ultnas_core::{Journal, Policy, Rotation, Vault};
 
 mod logging;
 mod services;
@@ -147,9 +147,13 @@ async fn main() -> Result<()> {
         std::process::id()
     );
 
-    let journal = Arc::new(Journal::open(&vault_root.join("journal.log"))?);
-
     let policy = Arc::new(load_policy(args.policy.as_deref(), &vault)?);
+    let journal = Arc::new(
+        Journal::open(&vault_root.join("journal.log"))?.with_rotation(Rotation {
+            max_bytes: policy.global.journal_max_bytes,
+            keep: policy.global.journal_keep,
+        }),
+    );
     let ip = &policy.global.integrity;
     if ip.restore_source == "remote" {
         warn!("restore_source \"remote\" is not implemented yet — using memory_then_store");

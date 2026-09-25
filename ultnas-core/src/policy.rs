@@ -35,6 +35,19 @@ pub struct GlobalPolicy {
     /// Integrity guard configuration — controls write-violation detection and restore.
     #[serde(default)]
     pub integrity: IntegrityPolicy,
+    /// Rotate `journal.log` once it passes this many bytes. Default: 64 MiB.
+    #[serde(default = "default_journal_max_bytes")]
+    pub journal_max_bytes: u64,
+    /// Rotated journal files kept (`journal.log.1` …). Default: 5.
+    #[serde(default = "default_journal_keep")]
+    pub journal_keep: u32,
+}
+
+fn default_journal_max_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+fn default_journal_keep() -> u32 {
+    5
 }
 
 impl Default for GlobalPolicy {
@@ -44,6 +57,8 @@ impl Default for GlobalPolicy {
             max_record_size_bytes: None,
             require_seal_before_rotation: false,
             integrity: IntegrityPolicy::default(),
+            journal_max_bytes: default_journal_max_bytes(),
+            journal_keep: default_journal_keep(),
         }
     }
 }

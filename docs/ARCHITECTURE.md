@@ -155,6 +155,7 @@ Once sealed, record content is immutable. Metadata mutations are journaled.
 │   └── <ContentId>.json
 ├── namespace.db        # Namespace B-tree (mmap'd binary format)
 ├── journal.log         # Append-only operation journal (newline-delimited JSON)
+├── journal.log.1 …     # Rotated journal files (journal_keep of them)
 ├── seals/              # Detached seal files
 │   └── <ContentId>.seal
 ├── logs/               # ultnasd.<date>.log, rotated daily (default: 14 kept)
