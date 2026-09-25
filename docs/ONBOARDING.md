@@ -19,13 +19,13 @@
 ## 2. Fork & Clone
 
 ```bash
-# 1. Fork https://github.com/sovereignarchivist/ultnas on GitHub
+# 1. Fork https://github.com/thestickybullgod/ultnas on GitHub
 # 2. Clone your fork
 git clone https://github.com/YOUR_USERNAME/ultnas.git
 cd ultnas
 
 # 3. Add the upstream remote
-git remote add upstream https://github.com/sovereignarchivist/ultnas.git
+git remote add upstream https://github.com/thestickybullgod/ultnas.git
 ```
 
 ---

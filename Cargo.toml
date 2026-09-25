@@ -12,8 +12,8 @@ edition       = "2021"
 rust-version  = "1.80"
 authors       = ["Dustin Wayne Deen <sovereignarchivist@outlook.com>"]
 license       = "MIT"
-repository    = "https://github.com/sovereignarchivist/ultnas"
-homepage      = "https://github.com/sovereignarchivist/ultnas"
+repository    = "https://github.com/thestickybullgod/ultnas"
+homepage      = "https://github.com/thestickybullgod/ultnas"
 
 [workspace.dependencies]
 blake3            = "1.5"

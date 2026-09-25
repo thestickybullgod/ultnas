@@ -48,7 +48,7 @@ All contributors must abide by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 ```bash
 git clone https://github.com/YOUR_USERNAME/ultnas.git
 cd ultnas
-git remote add upstream https://github.com/sovereignarchivist/ultnas.git
+git remote add upstream https://github.com/thestickybullgod/ultnas.git
 cargo build --workspace
 ```
 

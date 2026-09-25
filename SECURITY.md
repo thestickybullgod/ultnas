@@ -72,7 +72,7 @@ Every mutation to the vault is written to `journal.log` — an append-only, newl
 5. You will be credited in the release notes unless you prefer to remain anonymous
 
 Alternatively, use **GitHub's private security advisory** feature:
-`https://github.com/sovereignarchivist/ultnas/security/advisories/new`
+`https://github.com/thestickybullgod/ultnas/security/advisories/new`
 
 ### Severity Classification
 
