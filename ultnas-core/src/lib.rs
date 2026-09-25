@@ -26,6 +26,7 @@
 
 pub mod address;
 pub mod error;
+pub mod invisible;
 pub mod journal;
 pub mod namespace;
 pub mod policy;
