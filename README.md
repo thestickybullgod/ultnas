@@ -55,29 +55,34 @@ when you start tracking it are part of its baseline and never count against it.
 
 ## Quick Start
 
+On Debian or Ubuntu, install the `.deb` (from the **Debian package** workflow's
+artifacts, or a release), then:
+
 ```bash
-# Prerequisites: Rust 1.89+
+sudo apt install ./ultnas_0.1.0-1_amd64.deb
+
+ultnas setup                              # create your vault, choose what to protect
+systemctl --user enable --now ultnasd     # start protecting
+ultnas daemon status                      # check on it
+```
+
+To protect system files such as `/etc`, do the same as root:
+`sudo ultnas setup`, then `sudo systemctl enable --now ultnasd`.
+[TESTING_LINUX.md](TESTING_LINUX.md) walks through every feature step by step.
+
+From source (Rust 1.89+):
+
+```bash
 git clone https://github.com/thestickybullgod/ultnas.git
 cd ultnas
 cargo build --workspace --release
 export PATH="$PWD/target/release:$PATH"
-
-# Create a vault. A hidden directory in your home keeps it out of the way
-# (and out of any home directory you track).
-ultnas --vault ~/.ultnas init --name "$USER"
-
-# Pick recommended places to protect from a checklist
-ultnas --vault ~/.ultnas setup
-
-# Start the daemon
-ultnasd --vault ~/.ultnas &
-
-# Check on it
-ultnas --vault ~/.ultnas daemon status
+ultnas setup
+ultnasd &
 ```
 
-`--vault` defaults to the current directory, so running the commands from
-inside the vault works too.
+The vault lives in `~/.local/share/ultnas` (`/var/lib/ultnas` as root);
+`--vault` or `$ULTNAS_VAULT` picks another.
 
 ## Choosing What to Protect
 
@@ -146,9 +151,11 @@ versions are kept. See the [Policy Guide](docs/POLICY_GUIDE.md).
 | `ultnas integrity status` / `violations` | What the journal says has happened |
 | `ultnas integrity lift-quarantine <ns>` | Resume protection of a quarantined namespace |
 | `ultnas purge --rotate [--dry-run]` | Apply the retention rules now |
+| `ultnas completions <shell>` | Shell completion script (the `.deb` installs bash, zsh, and fish ones) |
 
-The daemon logs to `<vault>/logs/ultnasd.<date>.log` (rotated daily) as well as
-stdout, and only one daemon can run per vault.
+Run by hand, the daemon logs to `<vault>/logs/ultnasd.<date>.log` (rotated
+daily) as well as stdout; under systemd, to the journal
+(`journalctl --user -u ultnasd`). Only one daemon can run per vault.
 
 ## Platforms
 

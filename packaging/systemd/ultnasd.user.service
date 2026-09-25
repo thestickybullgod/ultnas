@@ -1,0 +1,14 @@
+[Unit]
+Description=Ultnas: undo invisible-character writes to your tracked files
+Documentation=man:ultnasd(1) man:ultnas(1) https://github.com/thestickybullgod/ultnas
+# Nothing to guard until `ultnas setup` has created the default vault.
+ConditionPathExists=%h/.local/share/ultnas/vault.toml
+
+[Service]
+# Logs go to the journal: journalctl --user -u ultnasd
+ExecStart=/usr/bin/ultnasd --no-log-file
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

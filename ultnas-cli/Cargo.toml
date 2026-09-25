@@ -29,3 +29,39 @@ libc        = { workspace = true }
 
 [dev-dependencies]
 tempfile    = { workspace = true }
+
+# `cargo deb -p ultnas-cli --no-build`, after `cargo build --workspace --release`
+# and generating target/assets (see .github/workflows/deb.yml).
+[package.metadata.deb]
+name = "ultnas"
+maintainer = "Dustin Wayne Deen <sovereignarchivist@outlook.com>"
+copyright = "2026, Dustin Wayne Deen"
+section = "utils"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+Ultnas watches the text files you choose (shell startup files, SSH and Git \
+configuration, scripts, source trees, /etc) and undoes any write that slips \
+in invisible Unicode characters: zero-width characters, bidi controls \
+("Trojan Source"), tag characters, and fillers. Each such write is stripped; \
+repeated attempts get the file deleted and recreated from a verified stable \
+copy. Clean edits are accepted automatically or held for approval."""
+maintainer-scripts = "../packaging/debian/"
+assets = [
+    ["target/release/ultnas", "usr/bin/", "755"],
+    ["target/release/ultnasd", "usr/bin/", "755"],
+    ["../packaging/systemd/ultnasd.user.service", "usr/lib/systemd/user/ultnasd.service", "644"],
+    ["../packaging/systemd/ultnasd.system.service", "usr/lib/systemd/system/ultnasd.service", "644"],
+    ["../target/assets/ultnas.1.gz", "usr/share/man/man1/", "644"],
+    ["../target/assets/ultnasd.1.gz", "usr/share/man/man1/", "644"],
+    ["../target/assets/ultnas.bash", "usr/share/bash-completion/completions/ultnas", "644"],
+    ["../target/assets/_ultnas", "usr/share/zsh/vendor-completions/", "644"],
+    ["../target/assets/ultnas.fish", "usr/share/fish/vendor_completions.d/", "644"],
+    ["../README.md", "usr/share/doc/ultnas/", "644"],
+    ["../CHANGELOG.md", "usr/share/doc/ultnas/", "644"],
+    ["../TESTING_LINUX.md", "usr/share/doc/ultnas/", "644"],
+    ["../docs/POLICY_GUIDE.md", "usr/share/doc/ultnas/", "644"],
+    ["../docs/ARCHITECTURE.md", "usr/share/doc/ultnas/", "644"],
+    ["../docs/SECURITY.md", "usr/share/doc/ultnas/", "644"],
+    ["../policy/*.toml", "usr/share/doc/ultnas/examples/", "644"],
+]

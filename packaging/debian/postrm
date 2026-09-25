@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+# Vaults (~/.local/share/ultnas, /var/lib/ultnas) hold users' file history
+# and are never deleted by the package, even on purge.
+
+exit 0

@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+# Pick up the unit files. Neither service is enabled on install: there is
+# nothing to guard until `ultnas setup` has created a vault.
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    # On upgrade, a running system daemon picks up the new binary.
+    # (Per-user daemons: `systemctl --user restart ultnasd`.)
+    if [ "$1" = "configure" ] && [ -n "$2" ]; then
+        systemctl try-restart ultnasd.service >/dev/null 2>&1 || true
+    fi
+fi
+
+if [ "$1" = "configure" ] && [ -z "$2" ]; then
+    cat <<'EOF'
+
+Ultnas is installed. To start protecting your files:
+
+    ultnas setup                               # choose what to protect
+    systemctl --user enable --now ultnasd      # start the daemon
+
+For system files such as /etc, as root:
+
+    sudo ultnas setup
+    sudo systemctl enable --now ultnasd
+
+EOF
+fi
+
+exit 0

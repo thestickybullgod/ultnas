@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+# Stop the system daemon before its binary goes. Per-user daemons belong
+# to their users: they stop with `systemctl --user stop ultnasd` or logout.
+if [ "$1" = "remove" ] && [ -d /run/systemd/system ]; then
+    systemctl stop ultnasd.service >/dev/null 2>&1 || true
+    systemctl disable ultnasd.service >/dev/null 2>&1 || true
+fi
+
+exit 0

@@ -1,0 +1,17 @@
+[Unit]
+Description=Ultnas: undo invisible-character writes to system files
+Documentation=man:ultnasd(1) man:ultnas(1) https://github.com/thestickybullgod/ultnas
+After=local-fs.target
+# Nothing to guard until `sudo ultnas setup` has created /var/lib/ultnas.
+ConditionPathExists=/var/lib/ultnas/vault.toml
+
+[Service]
+# As root, the default vault is /var/lib/ultnas. Logs: journalctl -u ultnasd
+ExecStart=/usr/bin/ultnasd --no-log-file
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
