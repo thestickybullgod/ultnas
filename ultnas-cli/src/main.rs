@@ -1,7 +1,7 @@
 //! Ultnas CLI — choose what to protect, and manage the daemon that protects it.
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 use ultnas_core::{UltnasCoreError, Vault};
 
@@ -63,6 +63,11 @@ enum Commands {
     /// Daemon management
     #[command(subcommand)]
     Daemon(daemon::DaemonCommands),
+    /// Print a shell completion script (e.g. `ultnas completions bash`)
+    Completions { shell: clap_complete::Shell },
+    /// Print the man page (roff), for packaging
+    #[command(hide = true)]
+    Manpage,
 }
 
 fn main() -> Result<()> {
@@ -72,6 +77,19 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(log_level))
         .init();
+
+    // These describe the CLI itself; no vault involved.
+    match cli.command {
+        Commands::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "ultnas", &mut std::io::stdout());
+            return Ok(());
+        }
+        Commands::Manpage => {
+            clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
+            return Ok(());
+        }
+        _ => {}
+    }
 
     let vault = cli.vault.unwrap_or_else(Vault::default_root);
     let result = match cli.command {
@@ -89,6 +107,7 @@ fn main() -> Result<()> {
         Commands::Policy(cmd) => policy::run(&vault, cmd),
         Commands::Integrity(cmd) => integrity::run(&vault, cmd),
         Commands::Daemon(cmd) => daemon::run(&vault, cmd),
+        Commands::Completions { .. } | Commands::Manpage => unreachable!("handled above"),
     };
     // Say how to get a vault, not just that there isn't one.
     result.map_err(|e| match e.downcast_ref::<UltnasCoreError>() {

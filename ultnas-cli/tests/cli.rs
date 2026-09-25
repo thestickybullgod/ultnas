@@ -43,6 +43,26 @@ fn ultnas_vault_env_selects_the_vault() {
 }
 
 #[test]
+fn completions_and_manpage_need_no_vault() {
+    let env = Env::new();
+    for shell in ["bash", "zsh", "fish"] {
+        let run = env.ultnas_default(&["completions", shell], None);
+        run.assert_ok();
+        assert!(
+            run.stdout.contains("track"),
+            "{shell} completions lack commands"
+        );
+    }
+    let man = env.ultnas_default(&["manpage"], None);
+    man.assert_ok();
+    assert!(
+        man.stdout.contains(".TH ultnas"),
+        "{}",
+        &man.stdout[..man.stdout.len().min(200)]
+    );
+}
+
+#[test]
 fn init_refuses_an_existing_vault() {
     let env = Env::new();
     env.ultnas(&["init", "--name", "again"])

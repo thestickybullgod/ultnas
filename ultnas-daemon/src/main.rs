@@ -1,7 +1,7 @@
 //! Ultnas Daemon — background archiving, watching, and policy enforcement.
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -65,6 +65,9 @@ struct Args {
     /// Log at debug level
     #[arg(short, long)]
     verbose: bool,
+    /// Print the man page (roff) and exit, for packaging
+    #[arg(long, hide = true)]
+    manpage: bool,
     /// Directory for the daily-rotated log file (default: <vault>/logs)
     #[arg(long)]
     log_dir: Option<PathBuf>,
@@ -110,6 +113,10 @@ fn same_device(a: &Path, b: &Path) -> bool {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if args.manpage {
+        clap_mangen::Man::new(Args::command()).render(&mut std::io::stdout())?;
+        return Ok(());
+    }
 
     // Open (and so validate) the vault before creating anything in it —
     // log directory or lock file — but lock before anything else can write.
