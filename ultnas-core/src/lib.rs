@@ -1,6 +1,7 @@
 //! # ultnas-core
 //!
-//! Core library for the Ultnas sovereign archiving system.
+//! Core library for Ultnas, which protects text files from invisible-character
+//! tampering.
 //!
 //! Provides content addressing, namespace management, record sealing,
 //! policy evaluation, vault I/O, invisible-character detection, tracked-file
@@ -15,7 +16,7 @@
 //! # fn main() -> Result<(), ultnas_core::UltnasCoreError> {
 //! let vault = Vault::init(Path::new("./my-vault"), "personal-archive")?;
 //! let ns = NamespacePath::parse("documents/2026")?;
-//! let content = b"Hello, sovereign archive!";
+//! let content = b"Hello, archive!";
 //! let record = RecordBuilder::new(ns, "hello-doc")
 //!     .tag("example")
 //!     .media_type("text/plain")

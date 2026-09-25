@@ -24,8 +24,13 @@ use services::{
 };
 
 #[derive(Parser)]
-#[command(name = "ultnasd", about = "Ultnas background daemon", version)]
+#[command(
+    name = "ultnasd",
+    about = "Ultnas daemon: watches tracked files and undoes invisible-character writes",
+    version
+)]
 struct Args {
+    /// Vault to guard (one daemon per vault)
     #[arg(long, default_value = ".")]
     vault: PathBuf,
     /// Policy TOML (default: the vault manifest's `policy_path`, else built-in defaults)
@@ -35,12 +40,17 @@ struct Args {
     /// In-memory VerifiedCache budget in bytes (policy default 256 MiB)
     #[arg(long)]
     cache_bytes: Option<u64>,
+    /// Violations within the window before a file is deleted and recreated
+    /// (below it, each is stripped in place)
     #[arg(long)]
     violation_threshold: Option<u32>,
+    /// Seconds of quiet after which a file's violation count resets
     #[arg(long)]
     violation_window_secs: Option<u64>,
+    /// Violations this close together share one count (each is still repaired)
     #[arg(long)]
     debounce_ms: Option<u64>,
+    /// Restores in a namespace before it is quarantined
     #[arg(long)]
     escalate_after_restores: Option<u32>,
     /// Full re-hash of every sealed object and tracked file, as a backstop
@@ -51,6 +61,7 @@ struct Args {
     /// version, used when a restore finds nothing else (overrides the policy)
     #[arg(long)]
     mirror: Option<PathBuf>,
+    /// Log at debug level
     #[arg(short, long)]
     verbose: bool,
     /// Directory for the daily-rotated log file (default: <vault>/logs)

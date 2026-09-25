@@ -1,4 +1,4 @@
-//! Ultnas CLI — sovereign archiving from the terminal.
+//! Ultnas CLI — choose what to protect, and manage the daemon that protects it.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -10,7 +10,7 @@ use commands::{add, daemon, init, inspect, integrity, ls, policy, purge, setup, 
 #[derive(Parser)]
 #[command(
     name = "ultnas",
-    about = "Sovereign, policy-driven digital archiving",
+    about = "Protect text files from invisible-character tampering",
     version,
     propagate_version = true,
     arg_required_else_help = true

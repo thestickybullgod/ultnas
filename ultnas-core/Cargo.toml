@@ -1,6 +1,6 @@
 [package]
 name         = "ultnas-core"
-description  = "Core library for the Ultnas sovereign archiving system"
+description  = "Core library for Ultnas: invisible-character detection, tracked files, vault, journal, and policy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name         = "ultnas-daemon"
-description  = "Background daemon for the Ultnas sovereign archiving system"
+description  = "Ultnas daemon: watches tracked files and undoes invisible-character writes"
 default-run  = "ultnasd"
 version.workspace = true
 edition.workspace = true

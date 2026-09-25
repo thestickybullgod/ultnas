@@ -1,6 +1,6 @@
 [package]
 name         = "ultnas-cli"
-description  = "Command-line interface for the Ultnas sovereign archiving system"
+description  = "Command-line interface for Ultnas, which protects text files from invisible-character tampering"
 default-run  = "ultnas"
 version.workspace = true
 edition.workspace = true
