@@ -47,6 +47,8 @@ Ultnas is a three-tier system: a **core library**, a **CLI**, and a **background
 | `record` | Record creation, sealing, and verification |
 | `policy` | TOML policy parsing, validation, and evaluation engine |
 | `vault` | On-disk vault layout; atomic read/write primitives |
+| `invisible` | Invisible-character detection; classifying a write as clean or a violation |
+| `tracking` | Tracked live files: stable and pending versions, locked read-modify-write |
 | `journal` | Append-only structured operation journal |
 | `error` | Unified `UltnasCoreError` type hierarchy |
 
@@ -62,6 +64,9 @@ Ultnas is a three-tier system: a **core library**, a **CLI**, and a **background
 | `export` | Export records to an external format |
 | `purge` | Remove records per policy or explicit ID |
 | `policy validate` | Validate a policy TOML file |
+| `track` / `untrack` | Protect a live text file in place, or stop |
+| `approve` | Promote a tracked file's pending edit to its stable version |
+| `tracked` | List tracked files and their status |
 | `daemon status` | Query the running daemon over IPC |
 
 ### ultnas-daemon Services
@@ -151,6 +156,9 @@ Once sealed, record content is immutable. Metadata mutations are journaled.
 ├── journal.log         # Append-only operation journal (newline-delimited JSON)
 ├── seals/              # Detached seal files
 │   └── <ContentId>.seal
+├── tracked/            # Tracked live files (stable + pending version ids)
+│   ├── .lock           # Held briefly for every read-modify-write
+│   └── <hash of path>.json
 └── .ultnas-lock        # OS-locked while a daemon owns the vault (holds owner PID)
 ```
 

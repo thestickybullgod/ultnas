@@ -28,7 +28,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Journal ops `IntegrityRestoreIntent` (write-ahead) and `IntegrityRestoreFailed`
 - IntegrityGuard degraded mode: buffers journal entries and suspends auto-restore while the journal is unwritable
 
+- Tracked files (`ultnas track`, `untrack`, `approve`, `tracked`): live text files protected in place against invisible-character writes. Each write below `write_violation_threshold` is prevented by stripping the characters it added; at the threshold the file is deleted and recreated from its stable version (memory, then the vault's copy); repeated restores quarantine the namespace
+- `invisible` module: detects zero-width, bidi, tag, filler, and other format characters, with context rules for legitimate non-ASCII uses (emoji ZWJ, ZWNJ, variation selectors, subdivision flags)
+- Policy `approval = "automatic" | "approved"` under `[global.integrity]`, overridable per namespace: clean edits become the stable version immediately, or stay pending until `ultnas approve`
+- Journal ops `TrackFile`, `UntrackFile`, `VersionAccepted`, `VersionPending`, `VersionApproved`, `IntegritySanitize`; entries carry an optional `path`
+
 ### Changed
+- `ultnasd` loads its policy (`--policy`, else the manifest's `policy_path`, else defaults); integrity flags now override the policy instead of ignoring it
+- `restore_source` is honored for tracked files; `"remote"` falls back to `"memory_then_store"`
 - IntegrityGuard is now synchronous and runs, with the whole watcher scan, inside `spawn_blocking`
 - `VerifiedCache` is shared via `std::sync::Mutex`, is true LRU, stores `Arc<[u8]>`, and re-hashes on insert
 - Quarantine state is owned by IntegrityGuard and synced from the journal every watcher scan; CLI lifts reset violation counts

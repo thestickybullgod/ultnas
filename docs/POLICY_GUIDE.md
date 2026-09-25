@@ -48,6 +48,50 @@ tags_required = ["project"] # Records missing these tags are rejected
 
 ---
 
+## Integrity and Tracked Files
+
+`ultnas track <file>` protects a live text file in place. The daemon compares
+every change against the file's newest clean version:
+
+- **A write that adds invisible characters** (zero-width, bidi controls, tag
+  characters, fillers, other format characters) is a violation. Below
+  `write_violation_threshold`, each one is prevented by stripping the
+  characters it added. At the threshold, the file is deleted and recreated
+  from its stable version: from memory first, then the vault's copy. After
+  `escalate_after_restores` restores, the namespace is quarantined and left
+  alone until `ultnas integrity lift-quarantine`.
+- **A clean edit** is handled per `approval`:
+
+| `approval` | A clean edit… | Restores use… |
+|---|---|---|
+| `"automatic"` (default) | becomes the stable version immediately | the latest clean edit |
+| `"approved"` | stays on disk as *pending* until `ultnas approve <file>` | the last approved version (the pending one is kept) |
+
+```toml
+[global.integrity]
+write_violation_threshold = 5     # prevented writes before delete-and-recreate
+violation_window_secs     = 300   # counts reset after this much quiet
+escalate_after_restores   = 3     # restores before the namespace is quarantined
+restore_source            = "memory_then_store"   # "memory" | "store" | "memory_then_store"
+approval                  = "automatic"           # "automatic" | "approved"
+
+[[namespaces]]
+path     = "legal"
+approval = "approved"   # overrides the global setting for legal/ and below
+```
+
+A namespace's `approval` applies to it and every namespace under it; the most
+specific one wins. Daemon flags such as `--violation-threshold` override the
+policy's values.
+
+Some invisible characters are legitimate next to non-ASCII text (ZWJ in
+emoji, ZWNJ in Persian and Indic scripts, variation selectors, subdivision
+flags). Those are flagged only between ASCII characters. Characters already in
+a file when it is tracked (`--accept-existing`) are part of its baseline and
+never count against it.
+
+---
+
 ## Conflict Strategies
 
 | Strategy | Behaviour |

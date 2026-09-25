@@ -8,6 +8,11 @@ conflict                     = "version"
 max_record_size_bytes        = 524288000   # 500 MiB
 require_seal_before_rotation = false
 
+[global.integrity]
+# Clean edits to tracked files: "automatic" makes them the stable version at
+# once; "approved" keeps them pending until `ultnas approve <file>`.
+approval = "automatic"
+
 [[namespaces]]
 path     = "documents"
 conflict = "version"
