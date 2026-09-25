@@ -17,6 +17,8 @@
 //!
 //! - Each tracked file's *directory* is watched, not the file: restores and
 //!   editors replace files by rename, which would orphan a per-file watch.
+//!   Tracked directories are watched recursively, and a file that appears
+//!   in one is adopted (`IntegrityGuard::adopt`).
 //! - The vault root (for `journal.log`: CLI quarantine lifts) and `tracked/`
 //!   (files tracked or untracked by the CLI) are watched too, so both apply
 //!   at once and the watch set follows the tracked set.
@@ -25,7 +27,12 @@
 //!   into events; its own writes do produce events, but re-checking a file
 //!   the daemon just repaired finds it unchanged.
 //!
-//! A full scan (every sealed object and tracked file) runs at start, every
+//! A file tracked through a directory that is deleted stops being tracked
+//! in automatic mode; in approved mode the deletion is a violation, like any
+//! other unapproved change, and the file is recreated.
+//!
+//! A full scan (every sealed object and tracked file, and a walk of every
+//! tracked directory for files to adopt) runs at start, every
 //! `full_scan_interval`, and whenever the OS reports dropped events. Sealed
 //! objects are only checked by full scans. If watching can't start at all,
 //! the service falls back to full scans every [`FALLBACK_POLL`].
@@ -38,7 +45,7 @@ use notify::{
     Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -49,9 +56,9 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use ultnas_core::{
-    hash_bytes,
+    covering_dir, hash_bytes,
     invisible::{classify_change, Change},
-    read_live, ContentId, Live, Policy, TrackedFile, Vault,
+    read_live, ApprovalMode, ContentId, Live, Policy, TrackedDir, TrackedFile, Vault,
 };
 
 use super::integrity_guard::{lock, IntegrityGuard, Target, Violation};
@@ -76,6 +83,13 @@ enum Job {
     Full,
     /// Paths named by a batch of events.
     Paths(HashSet<PathBuf>),
+}
+
+/// The tracked set as of the last job, to spot what's new.
+#[derive(Clone, Default)]
+struct Known {
+    files: HashSet<PathBuf>,
+    dirs: Vec<TrackedDir>,
 }
 
 /// Directories whose events the service interprets, in the form `notify`
@@ -138,7 +152,7 @@ impl WatcherService {
         };
 
         let mut interval = tokio::time::interval(period);
-        let mut known: HashSet<PathBuf> = HashSet::new();
+        let mut known = Known::default();
         loop {
             let job = tokio::select! {
                 _ = interval.tick() => Job::Full,
@@ -164,7 +178,7 @@ impl WatcherService {
                 Ok(Some(tracked)) => {
                     known = tracked;
                     if let (Some(w), Some(r)) = (watches.as_mut(), roots.as_ref()) {
-                        w.sync(wanted_dirs(r, &known));
+                        w.sync(wanted_watches(r, &known));
                     }
                 }
                 Ok(None) => {}
@@ -197,16 +211,33 @@ fn batch_job(batch: Vec<Signal>, overflowed: bool) -> Job {
     }
 }
 
-/// Directories to watch: the vault root, `tracked/`, and every tracked
-/// file's parent.
-fn wanted_dirs(roots: &Roots, tracked: &HashSet<PathBuf>) -> HashSet<PathBuf> {
-    let mut dirs: HashSet<PathBuf> = tracked
+/// What to watch: every tracked directory recursively; the vault root,
+/// `tracked/`, and each tracked file's parent non-recursively. Anything
+/// already under a recursive watch is left to it, since watching one
+/// directory two ways would let unwatching one undo the other.
+fn wanted_watches(roots: &Roots, known: &Known) -> HashMap<PathBuf, RecursiveMode> {
+    let mut recursive: Vec<&Path> = known.dirs.iter().map(|d| d.path.as_path()).collect();
+    recursive.sort_by_key(|p| p.components().count());
+    let mut out: HashMap<PathBuf, RecursiveMode> = HashMap::new();
+    for dir in recursive {
+        if !out.keys().any(|r| dir.starts_with(r)) {
+            out.insert(dir.to_path_buf(), RecursiveMode::Recursive);
+        }
+    }
+    let flat = known
+        .files
         .iter()
-        .filter_map(|p| p.parent().map(Path::to_path_buf))
-        .collect();
-    dirs.insert(roots.root.clone());
-    dirs.insert(roots.tracked_dir.clone());
-    dirs
+        .filter_map(|p| p.parent())
+        .chain([roots.root.as_path(), roots.tracked_dir.as_path()]);
+    for dir in flat {
+        let covered = out
+            .iter()
+            .any(|(r, m)| *m == RecursiveMode::Recursive && dir.starts_with(r));
+        if !covered {
+            out.insert(dir.to_path_buf(), RecursiveMode::NonRecursive);
+        }
+    }
+    out
 }
 
 enum Signal {
@@ -218,7 +249,7 @@ enum Signal {
 /// The OS-level watches, kept in step with the tracked set.
 struct Watches {
     inner: RecommendedWatcher,
-    dirs: HashSet<PathBuf>,
+    dirs: HashMap<PathBuf, RecursiveMode>,
 }
 
 impl Watches {
@@ -236,25 +267,30 @@ impl Watches {
         })?;
         Ok(Self {
             inner,
-            dirs: HashSet::new(),
+            dirs: HashMap::new(),
         })
     }
 
-    fn sync(&mut self, wanted: HashSet<PathBuf>) {
-        let stale: Vec<PathBuf> = self.dirs.difference(&wanted).cloned().collect();
+    fn sync(&mut self, wanted: HashMap<PathBuf, RecursiveMode>) {
+        let stale: Vec<PathBuf> = self
+            .dirs
+            .iter()
+            .filter(|(d, m)| wanted.get(*d) != Some(*m))
+            .map(|(d, _)| d.clone())
+            .collect();
         for dir in stale {
             let _ = self.inner.unwatch(&dir);
             self.dirs.remove(&dir);
         }
-        for dir in wanted {
-            if self.dirs.contains(&dir) {
+        for (dir, mode) in wanted {
+            if self.dirs.contains_key(&dir) {
                 continue;
             }
             // A missing directory is retried after the next job; the full
             // scan still covers files in it meanwhile.
-            match self.inner.watch(&dir, RecursiveMode::NonRecursive) {
+            match self.inner.watch(&dir, mode) {
                 Ok(()) => {
-                    self.dirs.insert(dir);
+                    self.dirs.insert(dir, mode);
                 }
                 Err(e) => debug!("WatcherService: can't watch {}: {}", dir.display(), e),
             }
@@ -279,28 +315,32 @@ fn run_job(
     guard: &Mutex<IntegrityGuard>,
     policy: &Policy,
     job: Job,
-    known: &HashSet<PathBuf>,
+    known: &Known,
     roots: Option<&Roots>,
-) -> Option<HashSet<PathBuf>> {
+) -> Option<Known> {
     // Cheap and incremental: applies any CLI lift just written.
     lock(guard).sync_quarantine();
 
-    let tracked = match vault.tracked_files() {
-        Ok(tracked) => tracked,
-        Err(e) => {
-            warn!("WatcherService: could not list tracked files: {}", e);
+    let (tracked, dirs) = match (vault.tracked_files(), vault.tracked_dirs()) {
+        (Ok(t), Ok(d)) => (t, d),
+        (Err(e), _) | (_, Err(e)) => {
+            warn!("WatcherService: could not read the tracked set: {}", e);
             return None;
         }
     };
-    let paths: HashSet<PathBuf> = tracked.iter().map(|t| t.path.clone()).collect();
+    let files: HashSet<PathBuf> = tracked.iter().map(|t| t.path.clone()).collect();
 
     match job {
         Job::Full => {
             scan_sealed(vault, guard);
             check_tracked(guard, policy, tracked.iter());
+            for dir in &dirs {
+                adopt_new(guard, &dirs, &files, dir.candidates());
+            }
         }
         Job::Paths(hits) => {
-            // Newly tracked files get a first check; so does anything hit.
+            // A change under tracked/ may have added files or directories:
+            // first-check new files, and walk new directories.
             let set_changed = roots.is_some_and(|r| {
                 hits.iter()
                     .any(|p| p.parent() == Some(r.tracked_dir.as_path()))
@@ -309,18 +349,42 @@ fn run_job(
                 guard,
                 policy,
                 tracked.iter().filter(|t| {
-                    hits.contains(&t.path) || (set_changed && !known.contains(&t.path))
+                    hits.contains(&t.path) || (set_changed && !known.files.contains(&t.path))
                 }),
             );
+            let new_dirs = dirs
+                .iter()
+                .filter(|d| set_changed && !known.dirs.contains(d));
+            for dir in new_dirs {
+                adopt_new(guard, &dirs, &files, dir.candidates());
+            }
+            adopt_new(guard, &dirs, &files, hits);
         }
     }
-    Some(paths)
+    Some(Known { files, dirs })
+}
+
+/// Adopt each untracked path that a tracked directory covers.
+fn adopt_new(
+    guard: &Mutex<IntegrityGuard>,
+    dirs: &[TrackedDir],
+    tracked: &HashSet<PathBuf>,
+    paths: impl IntoIterator<Item = PathBuf>,
+) {
+    for path in paths {
+        if tracked.contains(&path) {
+            continue;
+        }
+        if let Some(dir) = covering_dir(dirs, &path) {
+            lock(guard).adopt(dir, &path);
+        }
+    }
 }
 
 /// Full check: sync quarantine, then every sealed record and tracked file.
 #[cfg(test)]
 fn scan(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
-    run_job(vault, guard, policy, Job::Full, &HashSet::new(), None);
+    run_job(vault, guard, policy, Job::Full, &Known::default(), None);
 }
 
 /// Report every sealed record whose object no longer matches its ContentId
@@ -370,11 +434,16 @@ fn check_tracked<'a>(
         let live = match live {
             Live::File { content, .. } => content,
             Live::Missing => {
-                warn!(
-                    "WatcherService: tracked file {} was deleted",
-                    t.path.display()
-                );
-                g.record_violation(violation(t, None));
+                let mode = policy.approval_for(&t.namespace);
+                if t.source.is_some() && mode == ApprovalMode::Automatic {
+                    g.record_removal(t);
+                } else {
+                    warn!(
+                        "WatcherService: tracked file {} was deleted",
+                        t.path.display()
+                    );
+                    g.record_violation(violation(t, None));
+                }
                 continue;
             }
             Live::NotRegular => {
@@ -447,7 +516,7 @@ mod tests {
     use std::{fs, path::PathBuf};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
-    use ultnas_core::{canonical_path, ApprovalMode, ContentId, Journal, JournalOp, NamespacePath};
+    use ultnas_core::{canonical_path, ContentId, Journal, JournalOp, NamespacePath};
 
     const CLEAN: &str = "let is_admin = false;\n";
 
@@ -481,6 +550,7 @@ mod tests {
                     stable,
                     pending: None,
                     updated_at: Utc::now(),
+                    source: None,
                 });
                 Ok(())
             })
@@ -775,6 +845,7 @@ mod tests {
                     stable: id,
                     pending: None,
                     updated_at: Utc::now(),
+                    source: None,
                 });
                 Ok(())
             })
@@ -787,6 +858,143 @@ mod tests {
             "attack on newly tracked file not repaired"
         );
         task.abort();
+    }
+
+    /// Track `f`'s directory recursively, as `ultnas track --recursive` would.
+    fn track_dir(f: &Fixture) -> TrackedDir {
+        let d = TrackedDir {
+            path: canonical_path(f._dir.path()).unwrap(),
+            namespace: NamespacePath::parse("code").unwrap(),
+            exclude: vec!["target".into()],
+            ignored: vec![canonical_path(f.vault.root()).unwrap()],
+            added_at: Utc::now(),
+        };
+        f.vault
+            .update_tracked_dir(&d.path, |s| {
+                *s = Some(d.clone());
+                Ok(())
+            })
+            .unwrap();
+        d
+    }
+
+    fn tracked_paths(f: &Fixture) -> Vec<PathBuf> {
+        f.vault
+            .tracked_files()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.path)
+            .collect()
+    }
+
+    #[test]
+    fn full_scan_adopts_new_text_files_in_tracked_dirs() {
+        let f = fixture(ApprovalMode::Automatic, true);
+        let d = track_dir(&f);
+        fs::create_dir_all(d.path.join("src")).unwrap();
+        fs::create_dir_all(d.path.join("target")).unwrap();
+        fs::write(d.path.join("src/new.rs"), "fn main() {}\n").unwrap();
+        fs::write(d.path.join("evil.txt"), "pay\u{200B}ee\n").unwrap();
+        fs::write(d.path.join("bin.dat"), [0xffu8, 0xfe, 0x00]).unwrap();
+        fs::write(d.path.join("target/out.txt"), "build output\n").unwrap();
+        fs::write(d.path.join("notes.txt.swp"), "scratch\n").unwrap();
+        f.scan();
+
+        let paths = tracked_paths(&f);
+        assert!(paths.contains(&d.path.join("src").join("new.rs")));
+        assert!(paths.contains(&d.path.join("evil.txt")));
+        assert_eq!(paths.len(), 3, "{paths:?}"); // + the fixture's own file
+                                                 // A new file's invisible characters are stripped before adoption.
+        assert_eq!(
+            fs::read_to_string(d.path.join("evil.txt")).unwrap(),
+            "payee\n"
+        );
+        let t = f
+            .vault
+            .tracked_files()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.path.ends_with("evil.txt"))
+            .unwrap();
+        assert_eq!(t.stable, hash_bytes(b"payee\n"));
+        assert_eq!(t.source.as_deref(), Some(d.path.as_path()));
+    }
+
+    #[test]
+    fn deleting_a_dir_tracked_file_follows_the_approval_mode() {
+        for (mode, restored) in [
+            (ApprovalMode::Automatic, false),
+            (ApprovalMode::Approved, true),
+        ] {
+            let f = fixture(mode, true);
+            let d = track_dir(&f);
+            let p = d.path.join("doc.txt");
+            fs::write(&p, "keep me\n").unwrap();
+            f.scan();
+            assert!(tracked_paths(&f).contains(&p));
+
+            fs::remove_file(&p).unwrap();
+            f.scan();
+            assert_eq!(p.exists(), restored, "{mode:?}");
+            assert_eq!(tracked_paths(&f).contains(&p), restored, "{mode:?}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn events_adopt_and_protect_files_created_in_tracked_dirs() {
+        let f = fixture(ApprovalMode::Automatic, true);
+        let d = track_dir(&f);
+        fs::create_dir_all(d.path.join("sub")).unwrap();
+        let guard = Arc::new(Mutex::new(guard_with(&f, 5, 0)));
+        let svc = WatcherService::new(
+            f.vault.clone(),
+            guard,
+            Arc::new(f.policy.clone()),
+            Duration::from_secs(3600),
+        );
+        let task = tokio::spawn(svc.run());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let p = d.path.join("sub").join("fresh.txt");
+        fs::write(&p, "fresh\n").unwrap();
+        assert!(
+            eventually(|| tracked_paths(&f).contains(&p)).await,
+            "new file not adopted"
+        );
+        fs::write(&p, "fr\u{200B}esh\n").unwrap();
+        assert!(
+            eventually(|| fs::read_to_string(&p).unwrap() == "fresh\n").await,
+            "attack on adopted file not repaired"
+        );
+        task.abort();
+    }
+
+    #[test]
+    fn nested_watches_collapse_into_the_outer_recursive_one() {
+        let roots = Roots {
+            root: PathBuf::from("/v"),
+            tracked_dir: PathBuf::from("/v/tracked"),
+        };
+        let dir = |p: &str| TrackedDir {
+            path: PathBuf::from(p),
+            namespace: NamespacePath::parse("x").unwrap(),
+            exclude: vec![],
+            ignored: vec![],
+            added_at: Utc::now(),
+        };
+        let known = Known {
+            files: [PathBuf::from("/w/sub/a.txt"), PathBuf::from("/other/b.txt")].into(),
+            dirs: vec![dir("/w/sub"), dir("/w")],
+        };
+        let w = wanted_watches(&roots, &known);
+        assert_eq!(w.get(Path::new("/w")), Some(&RecursiveMode::Recursive));
+        assert_eq!(w.get(Path::new("/w/sub")), None);
+        assert_eq!(
+            w.get(Path::new("/other")),
+            Some(&RecursiveMode::NonRecursive)
+        );
+        assert_eq!(w.get(Path::new("/v")), Some(&RecursiveMode::NonRecursive));
+        assert_eq!(w.len(), 4);
     }
 
     #[test]

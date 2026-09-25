@@ -75,8 +75,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use ultnas_core::{
     apply_quarantine_entry, hash_bytes, invisible, read_live, recreate_file, rewrite_file,
-    ApprovalMode, ContentId, Journal, JournalEntry, JournalOp, Live, QuarantineChange, TrackedFile,
-    UltnasCoreError, Vault,
+    ApprovalMode, ContentId, Journal, JournalEntry, JournalOp, Live, QuarantineChange, TrackedDir,
+    TrackedFile, UltnasCoreError, Vault, MAX_ADOPT_BYTES,
 };
 
 use super::verified_cache::SharedCache;
@@ -582,6 +582,155 @@ impl IntegrityGuard {
             detail,
         ));
         self.alert(alert);
+    }
+
+    /// Start tracking a file that appeared under a tracked directory. Its
+    /// first version becomes stable; invisible characters in it are
+    /// stripped first, since a new file has no baseline that could excuse
+    /// them. Binary and oversized files are left alone.
+    pub fn adopt(&mut self, dir: &TrackedDir, path: &Path) {
+        self.flush_pending_journal();
+        if self.is_degraded() || self.quarantine.is_quarantined(&dir.namespace.as_str()) {
+            return;
+        }
+        let Ok(Live::File { content, meta }) = read_live(path) else {
+            return;
+        };
+        if meta.len() > MAX_ADOPT_BYTES {
+            return;
+        }
+        let observed = hash_bytes(&content);
+        let Ok(text) = String::from_utf8(content) else {
+            return;
+        };
+        let namespace = dir.namespace.as_str();
+        let journal_path = Some(path.to_path_buf());
+
+        let found = invisible::scan(&text);
+        let content = if let Some(first) = found.first() {
+            let detail = format!("removed={} first={} (new file)", found.len(), first);
+            if !self.journal_write(journal_entry(
+                JournalOp::IntegrityRestoreIntent,
+                observed,
+                namespace.clone(),
+                journal_path.clone(),
+                None,
+                format!("action=sanitize {detail}"),
+            )) {
+                return;
+            }
+            let cleaned = invisible::strip_introduced("", &text);
+            if let Err(e) = rewrite_file(path, cleaned.as_bytes(), Some(observed)) {
+                // Changed meanwhile (the next event retries) or unwritable.
+                debug!("IntegrityGuard: not adopting {} yet: {}", path.display(), e);
+                self.journal_write(journal_entry(
+                    JournalOp::IntegrityRestoreFailed,
+                    observed,
+                    namespace,
+                    journal_path,
+                    None,
+                    format!("action=sanitize {e}"),
+                ));
+                return;
+            }
+            warn!(
+                "IntegrityGuard: stripped invisible characters from new file {} ({})",
+                path.display(),
+                detail
+            );
+            self.journal_write(journal_entry(
+                JournalOp::IntegritySanitize,
+                observed,
+                namespace.clone(),
+                journal_path.clone(),
+                Some(found.len() as u64),
+                detail,
+            ));
+            self.alert(IntegrityAlert::Sanitized {
+                path: path.to_path_buf(),
+                removed: found.len(),
+            });
+            cleaned.into_bytes()
+        } else {
+            text.into_bytes()
+        };
+
+        let vault = self.vault.clone();
+        let adopted = vault.update_tracked(path, |state| {
+            if state.is_some() {
+                return Ok(None);
+            }
+            let id = vault.write_version(&dir.namespace, path, &content)?;
+            *state = Some(TrackedFile {
+                path: path.to_path_buf(),
+                namespace: dir.namespace.clone(),
+                stable: id,
+                pending: None,
+                updated_at: Utc::now(),
+                source: Some(dir.path.clone()),
+            });
+            Ok(Some(id))
+        });
+        match adopted {
+            Ok(Some(id)) => {
+                info!(
+                    "IntegrityGuard: now tracking {} (in {})",
+                    path.display(),
+                    dir.path.display()
+                );
+                lock(&self.cache).insert(id, content);
+                self.journal_write(journal_entry(
+                    JournalOp::TrackFile,
+                    id,
+                    namespace,
+                    journal_path,
+                    None,
+                    format!("adopted from {}", dir.path.display()),
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => warn!("IntegrityGuard: could not adopt {}: {}", path.display(), e),
+        }
+    }
+
+    /// A file tracked through a directory was deleted, and the approval mode
+    /// is automatic: accept that like any other clean change, and stop
+    /// tracking it. (In approved mode a deletion is a violation instead.)
+    pub fn record_removal(&mut self, seen: &TrackedFile) {
+        self.flush_pending_journal();
+        if self.is_degraded() {
+            return;
+        }
+        let removed = self.vault.update_tracked(&seen.path, |state| {
+            if state.as_ref() != Some(seen) {
+                return Ok(false);
+            }
+            *state = None;
+            Ok(true)
+        });
+        match removed {
+            Ok(true) => {
+                info!(
+                    "IntegrityGuard: {} was deleted — no longer tracking it",
+                    seen.path.display()
+                );
+                self.trackers.remove(&seen.path);
+                self.journal_write(journal_entry(
+                    JournalOp::UntrackFile,
+                    seen.stable,
+                    seen.namespace.as_str(),
+                    Some(seen.path.clone()),
+                    None,
+                    "deleted (approval=automatic)".into(),
+                ));
+            }
+            Ok(false) => {}
+            Err(e) => warn!(
+                "IntegrityGuard: could not untrack {}: {}",
+                seen.path.display(),
+                e
+            ),
+        }
     }
 
     /// Keep a tracked file's stable and pending versions in memory, so a

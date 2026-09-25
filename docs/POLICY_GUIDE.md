@@ -88,6 +88,29 @@ A write that arrives with invisible characters is never trusted as an edit.
 If stripping them leaves visible changes too, the result is held as pending
 whatever the `approval` setting, and needs `ultnas approve <file>`.
 
+### Tracked directories
+
+`ultnas track --recursive <dir>` tracks every UTF-8 text file under a
+directory, and the daemon adopts files created there later: a new file's
+first version becomes its stable version, after any invisible characters in
+it are stripped. Skipped: hidden files and directories (`.git`, `.env`, …),
+editor scratch files (`*~`, `*.swp`, `*.tmp`, `#…#`, …), names given with
+`--exclude` (e.g. `--exclude target --exclude node_modules`), binary files,
+files over 16 MiB, and a vault inside the directory. Files that already
+contain invisible characters when the directory is tracked are listed and
+left untracked unless `--accept-existing` is given.
+
+Deleting a file tracked through a directory follows `approval`:
+
+| `approval` | Deleting a file… |
+|---|---|
+| `"automatic"` | is accepted; the file stops being tracked |
+| `"approved"` | is a violation; the file is recreated (`ultnas untrack <file>` to really remove it) |
+
+`ultnas untrack <file>` on a file inside a tracked directory also keeps the
+directory from adopting it again; `ultnas untrack <dir>` stops tracking the
+directory and every file tracked through it.
+
 Some invisible characters are legitimate next to non-ASCII text (ZWJ in
 emoji, ZWNJ in Persian and Indic scripts, variation selectors, subdivision
 flags). Those are flagged only between ASCII characters. Characters already in

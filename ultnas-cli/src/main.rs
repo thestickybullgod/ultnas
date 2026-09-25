@@ -42,9 +42,9 @@ enum Commands {
     Ls(ls::LsArgs),
     /// Remove records per policy or explicit ID
     Purge(purge::PurgeArgs),
-    /// Protect a live text file against invisible-character writes
+    /// Protect a live text file (or, with --recursive, a directory) against invisible-character writes
     Track(track::TrackArgs),
-    /// Stop protecting a file (its versions stay in the vault)
+    /// Stop protecting a file or directory (versions stay in the vault)
     Untrack(track::FileArg),
     /// Promote a tracked file's pending edit to its stable version
     Approve(track::FileArg),

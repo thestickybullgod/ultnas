@@ -6,22 +6,32 @@
 //! objects in the vault, so the vault is an independent restore source for
 //! the live file.
 //!
-//! State lives in `tracked/<blake3 of path>.json`. The CLI (track, approve)
-//! and the daemon (accept, mark pending) both change it, so every change is
-//! a read-modify-write under an OS lock on `tracked/.lock`
-//! ([`Vault::update_tracked`]).
+//! A *tracked directory* ([`TrackedDir`]) tracks every text file under it,
+//! including files created later, which the daemon adopts. Hidden names,
+//! editor scratch files, excluded names, and explicitly untracked paths are
+//! skipped ([`TrackedDir::covers`]).
+//!
+//! State lives in `tracked/<blake3 of path>.json` (files) and
+//! `tracked/<blake3 of path>.tdir` (directories). The CLI (track, approve)
+//! and the daemon (accept, mark pending, adopt) both change it, so every
+//! change is a read-modify-write under an OS lock on `tracked/.lock`
+//! ([`Vault::update_tracked`], [`Vault::update_tracked_dir`]).
 
 use crate::{
     hash_bytes, vault::atomic_write, ContentId, NamespacePath, RecordBuilder, UltnasCoreError,
     Vault,
 };
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
     io::ErrorKind,
     path::{Path, PathBuf},
 };
+use walkdir::WalkDir;
+
+/// Largest file a tracked directory adopts.
+pub const MAX_ADOPT_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackedFile {
@@ -33,6 +43,9 @@ pub struct TrackedFile {
     /// Clean edit awaiting `ultnas approve` (approval mode only).
     pub pending: Option<ContentId>,
     pub updated_at: DateTime<Utc>,
+    /// The tracked directory this file was tracked through, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<PathBuf>,
 }
 
 impl TrackedFile {
@@ -40,6 +53,78 @@ impl TrackedFile {
     pub fn baseline(&self) -> ContentId {
         self.pending.unwrap_or(self.stable)
     }
+}
+
+/// A directory whose text files are all tracked, including new ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedDir {
+    /// Canonical absolute path.
+    pub path: PathBuf,
+    pub namespace: NamespacePath,
+    /// File or directory names skipped anywhere below (e.g. `target`).
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Paths skipped with everything under them: files untracked one by
+    /// one, files that already had invisible characters, a vault inside.
+    #[serde(default)]
+    pub ignored: Vec<PathBuf>,
+    pub added_at: DateTime<Utc>,
+}
+
+impl TrackedDir {
+    /// Whether this directory tracks `path`: it is below it, and neither it
+    /// nor any directory between is hidden, excluded, or ignored, and it
+    /// isn't an editor scratch file.
+    pub fn covers(&self, path: &Path) -> bool {
+        let Ok(rel) = path.strip_prefix(&self.path) else {
+            return false;
+        };
+        if rel.as_os_str().is_empty() || self.ignored.iter().any(|i| path.starts_with(i)) {
+            return false;
+        }
+        let names: Vec<_> = rel.iter().map(|c| c.to_string_lossy()).collect();
+        let Some(file) = names.last() else {
+            return false;
+        };
+        !names.iter().any(|n| self.skips_name(n)) && !is_scratch(file)
+    }
+
+    fn skips_name(&self, name: &str) -> bool {
+        name.starts_with('.') || self.exclude.iter().any(|e| e == name)
+    }
+
+    /// Regular files now under the directory that it covers, up to
+    /// [`MAX_ADOPT_BYTES`]. Symbolic links are neither followed nor listed.
+    pub fn candidates(&self) -> Vec<PathBuf> {
+        WalkDir::new(&self.path)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| {
+                e.depth() == 0
+                    || (!self.skips_name(&e.file_name().to_string_lossy())
+                        && !self.ignored.iter().any(|i| e.path().starts_with(i)))
+            })
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| e.metadata().is_ok_and(|m| m.len() <= MAX_ADOPT_BYTES))
+            .map(|e| e.into_path())
+            .filter(|p| self.covers(p))
+            .collect()
+    }
+}
+
+/// Editor and tool scratch files (including the daemon's own `*.tmp`),
+/// which come and go and must never be adopted, let alone restored.
+fn is_scratch(name: &str) -> bool {
+    const SUFFIXES: [&str; 7] = ["~", ".swp", ".swo", ".swx", ".tmp", ".bak", ".orig"];
+    SUFFIXES.iter().any(|s| name.ends_with(s)) || (name.starts_with('#') && name.ends_with('#'))
+}
+
+/// The most specific tracked directory that covers `path`.
+pub fn covering_dir<'a>(dirs: &'a [TrackedDir], path: &Path) -> Option<&'a TrackedDir> {
+    dirs.iter()
+        .filter(|d| d.covers(path))
+        .max_by_key(|d| d.path.components().count())
 }
 
 /// Canonical form of a path to track. Falls back to canonicalizing the parent
@@ -64,13 +149,13 @@ impl Vault {
         self.root().join("tracked")
     }
 
-    fn tracked_entry_path(&self, path: &Path) -> PathBuf {
+    fn tracked_entry_path(&self, path: &Path, ext: &str) -> PathBuf {
         let key = hash_bytes(path.to_string_lossy().as_bytes());
-        self.tracked_dir().join(format!("{}.json", key.to_hex()))
+        self.tracked_dir().join(format!("{}.{ext}", key.to_hex()))
     }
 
-    /// Every tracked file. Vaults created before tracking existed have none.
-    pub fn tracked_files(&self) -> Result<Vec<TrackedFile>, UltnasCoreError> {
+    /// Every entry of type `S` stored with extension `ext`.
+    fn tracked_entries<S: DeserializeOwned>(&self, ext: &str) -> Result<Vec<S>, UltnasCoreError> {
         let entries = match fs::read_dir(self.tracked_dir()) {
             Ok(entries) => entries,
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok(vec![]),
@@ -79,14 +164,78 @@ impl Vault {
         let mut out = vec![];
         for entry in entries {
             let path = entry?.path();
-            if path.extension().is_none_or(|ext| ext != "json") {
+            if path.extension().is_none_or(|e| e != ext) {
                 continue;
             }
             let Ok(raw) = fs::read(&path) else { continue };
-            if let Ok(t) = serde_json::from_slice::<TrackedFile>(&raw) {
+            if let Ok(t) = serde_json::from_slice::<S>(&raw) {
                 out.push(t);
             }
         }
+        Ok(out)
+    }
+
+    /// Every tracked directory.
+    pub fn tracked_dirs(&self) -> Result<Vec<TrackedDir>, UltnasCoreError> {
+        let mut out: Vec<TrackedDir> = self.tracked_entries("tdir")?;
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(out)
+    }
+
+    /// [`Vault::update_tracked`] for a tracked directory's state.
+    pub fn update_tracked_dir<T>(
+        &self,
+        path: &Path,
+        f: impl FnOnce(&mut Option<TrackedDir>) -> Result<T, UltnasCoreError>,
+    ) -> Result<T, UltnasCoreError> {
+        self.locked_update(&self.tracked_entry_path(path, "tdir"), f)
+    }
+
+    /// Read-modify-write one entry under the tracking lock.
+    fn locked_update<S, T>(
+        &self,
+        entry_path: &Path,
+        f: impl FnOnce(&mut Option<S>) -> Result<T, UltnasCoreError>,
+    ) -> Result<T, UltnasCoreError>
+    where
+        S: Serialize + DeserializeOwned + Clone + PartialEq,
+    {
+        fs::create_dir_all(self.tracked_dir())?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.tracked_dir().join(".lock"))?;
+        lock.lock()?;
+
+        let before = match fs::read(entry_path) {
+            Ok(raw) => Some(
+                serde_json::from_slice::<S>(&raw)
+                    .map_err(|e| UltnasCoreError::Serialization(e.to_string()))?,
+            ),
+            Err(e) if e.kind() == ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        let mut state = before.clone();
+        let out = f(&mut state)?;
+
+        if state != before {
+            match &state {
+                Some(t) => {
+                    let json = serde_json::to_vec_pretty(t)
+                        .map_err(|e| UltnasCoreError::Serialization(e.to_string()))?;
+                    atomic_write(entry_path, &json)?;
+                }
+                None => fs::remove_file(entry_path)?,
+            }
+        }
+        drop(lock);
+        Ok(out)
+    }
+
+    /// Every tracked file. Vaults created before tracking existed have none.
+    pub fn tracked_files(&self) -> Result<Vec<TrackedFile>, UltnasCoreError> {
+        let mut out: Vec<TrackedFile> = self.tracked_entries("json")?;
         out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
     }
@@ -101,38 +250,7 @@ impl Vault {
         path: &Path,
         f: impl FnOnce(&mut Option<TrackedFile>) -> Result<T, UltnasCoreError>,
     ) -> Result<T, UltnasCoreError> {
-        fs::create_dir_all(self.tracked_dir())?;
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.tracked_dir().join(".lock"))?;
-        lock.lock()?;
-
-        let entry_path = self.tracked_entry_path(path);
-        let before = match fs::read(&entry_path) {
-            Ok(raw) => Some(
-                serde_json::from_slice::<TrackedFile>(&raw)
-                    .map_err(|e| UltnasCoreError::Serialization(e.to_string()))?,
-            ),
-            Err(e) if e.kind() == ErrorKind::NotFound => None,
-            Err(e) => return Err(e.into()),
-        };
-        let mut state = before.clone();
-        let out = f(&mut state)?;
-
-        if state != before {
-            match &state {
-                Some(t) => {
-                    let json = serde_json::to_vec_pretty(t)
-                        .map_err(|e| UltnasCoreError::Serialization(e.to_string()))?;
-                    atomic_write(&entry_path, &json)?;
-                }
-                None => fs::remove_file(&entry_path)?,
-            }
-        }
-        drop(lock);
-        Ok(out)
+        self.locked_update(&self.tracked_entry_path(path, "json"), f)
     }
 
     /// Store `content` as a version of a tracked file and return its id.
@@ -198,6 +316,7 @@ mod tests {
                     stable: id,
                     pending: None,
                     updated_at: Utc::now(),
+                    source: None,
                 });
                 Ok(())
             })
@@ -253,6 +372,90 @@ mod tests {
         let id = track(&vault, &live);
         fs::write(vault.object_path(&id), b"evil").unwrap();
         assert!(vault.read_verified(&id).is_err());
+    }
+
+    fn tdir(root: &Path) -> TrackedDir {
+        TrackedDir {
+            path: root.to_path_buf(),
+            namespace: NamespacePath::parse("docs").unwrap(),
+            exclude: vec!["target".into()],
+            ignored: vec![root.join("vault")],
+            added_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn tracked_dir_covers_text_files_but_not_scratch_hidden_or_excluded() {
+        let root = PathBuf::from("/w");
+        let d = tdir(&root);
+        for yes in ["a.txt", "src/main.rs", "deep/er/notes.md", "README"] {
+            assert!(d.covers(&root.join(yes)), "{yes}");
+        }
+        for no in [
+            ".env",
+            ".git/config",
+            "src/.hidden/x.rs",
+            "target/debug/out.txt",
+            "a.txt~",
+            "a.txt.swp",
+            "a.txt.1234.tmp",
+            "#a.txt#",
+            "vault/records/x.json",
+        ] {
+            assert!(!d.covers(&root.join(no)), "{no}");
+        }
+        assert!(!d.covers(&root), "the directory itself");
+        assert!(!d.covers(Path::new("/elsewhere/a.txt")));
+    }
+
+    #[test]
+    fn covering_dir_prefers_the_most_specific() {
+        let outer = tdir(Path::new("/w"));
+        let mut inner = tdir(Path::new("/w/sub"));
+        inner.namespace = NamespacePath::parse("inner").unwrap();
+        let dirs = vec![outer, inner];
+        let hit = covering_dir(&dirs, Path::new("/w/sub/a.txt")).unwrap();
+        assert_eq!(hit.namespace.as_str(), "inner");
+        assert_eq!(
+            covering_dir(&dirs, Path::new("/w/a.txt")).unwrap().path,
+            PathBuf::from("/w")
+        );
+    }
+
+    #[test]
+    fn candidates_walk_skips_what_covers_rejects() {
+        let dir = TempDir::new().unwrap();
+        let root = canonical_path(dir.path()).unwrap();
+        for f in ["a.txt", "src/b.rs", ".git/c", "target/d.txt", "e.swp"] {
+            let p = root.join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, "x").unwrap();
+        }
+        let mut got: Vec<_> = tdir(&root)
+            .candidates()
+            .into_iter()
+            .map(|p| p.strip_prefix(&root).unwrap().to_path_buf())
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![PathBuf::from("a.txt"), PathBuf::from("src").join("b.rs")]
+        );
+    }
+
+    #[test]
+    fn tracked_dirs_roundtrip_separately_from_files() {
+        let (dir, vault, live) = setup();
+        track(&vault, &live);
+        let d = tdir(&canonical_path(dir.path()).unwrap());
+        vault
+            .update_tracked_dir(&d.path, |s| {
+                *s = Some(d.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(vault.tracked_dirs().unwrap(), vec![d]);
+        assert_eq!(vault.tracked_files().unwrap().len(), 1);
     }
 
     #[test]

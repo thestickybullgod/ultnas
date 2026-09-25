@@ -64,7 +64,7 @@ Ultnas is a three-tier system: a **core library**, a **CLI**, and a **background
 | `export` | Export records to an external format |
 | `purge` | Remove records per policy or explicit ID |
 | `policy validate` | Validate a policy TOML file |
-| `track` / `untrack` | Protect a live text file in place, or stop |
+| `track` / `untrack` | Protect a live text file (or, with `--recursive`, a directory) in place, or stop |
 | `approve` | Promote a tracked file's pending edit to its stable version |
 | `tracked` | List tracked files and their status |
 | `daemon status` | Query the running daemon over IPC |
@@ -159,7 +159,8 @@ Once sealed, record content is immutable. Metadata mutations are journaled.
 ├── logs/               # ultnasd.<date>.log, rotated daily (default: 14 kept)
 ├── tracked/            # Tracked live files (stable + pending version ids)
 │   ├── .lock           # Held briefly for every read-modify-write
-│   └── <hash of path>.json
+│   ├── <hash of path>.json   # a tracked file
+│   └── <hash of path>.tdir   # a tracked directory
 └── .ultnas-lock        # OS-locked while a daemon owns the vault (holds owner PID)
 ```
 
