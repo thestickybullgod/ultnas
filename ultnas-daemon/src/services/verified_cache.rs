@@ -84,6 +84,11 @@ impl VerifiedCache {
         Some(data)
     }
 
+    /// Whether `id` is cached, without changing its recency.
+    pub fn contains(&self, id: &ContentId) -> bool {
+        self.slots.contains_key(id)
+    }
+
     /// Move `id` to the most-recently-used end. O(n), fine at cache sizes
     /// of a few thousand entries; swap for an intrusive list if that grows.
     fn touch(&mut self, id: &ContentId) {

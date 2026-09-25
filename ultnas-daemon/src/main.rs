@@ -1,20 +1,24 @@
 //! Ultnas Daemon — background archiving, watching, and policy enforcement.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
-use ultnas_core::{Journal, Vault};
+use ultnas_core::{Journal, Policy, Vault};
 
 mod services;
 use services::{
-    integrity_guard::IntegrityGuard, ipc::IpcServer, policy_enforcer::PolicyEnforcer,
-    scheduler::Scheduler, vault_lock::VaultLock, verified_cache::VerifiedCache,
+    integrity_guard::{IntegrityGuard, RestoreOrder},
+    ipc::IpcServer,
+    policy_enforcer::PolicyEnforcer,
+    scheduler::Scheduler,
+    vault_lock::VaultLock,
+    verified_cache::VerifiedCache,
     watcher::WatcherService,
 };
 
@@ -23,21 +27,45 @@ use services::{
 struct Args {
     #[arg(long, default_value = ".")]
     vault: PathBuf,
+    /// Policy TOML (default: the vault manifest's `policy_path`, else built-in defaults)
     #[arg(long)]
     policy: Option<PathBuf>,
-    /// In-memory VerifiedCache budget in bytes (default 256 MiB)
-    #[arg(long, default_value_t = 256 * 1024 * 1024)]
-    cache_bytes: u64,
-    #[arg(long, default_value_t = 5)]
-    violation_threshold: u32,
-    #[arg(long, default_value_t = 300)]
-    violation_window_secs: u64,
-    #[arg(long, default_value_t = 100)]
-    debounce_ms: u64,
-    #[arg(long, default_value_t = 3)]
-    escalate_after_restores: u32,
+    // The flags below override the policy's `[global.integrity]` values.
+    /// In-memory VerifiedCache budget in bytes (policy default 256 MiB)
+    #[arg(long)]
+    cache_bytes: Option<u64>,
+    #[arg(long)]
+    violation_threshold: Option<u32>,
+    #[arg(long)]
+    violation_window_secs: Option<u64>,
+    #[arg(long)]
+    debounce_ms: Option<u64>,
+    #[arg(long)]
+    escalate_after_restores: Option<u32>,
     #[arg(short, long)]
     verbose: bool,
+}
+
+/// `--policy`, else the manifest's `policy_path` (relative to the vault root),
+/// else the built-in defaults.
+fn load_policy(explicit: Option<&Path>, vault: &Vault) -> Result<Policy> {
+    let path = explicit.map(Path::to_path_buf).or_else(|| {
+        vault
+            .manifest()
+            .policy_path
+            .as_ref()
+            .map(|p| vault.root().join(p))
+    });
+    let Some(path) = path else {
+        info!("no policy configured — using built-in defaults");
+        return Ok(Policy::default());
+    };
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading policy {}", path.display()))?;
+    let policy =
+        Policy::from_toml(&raw).with_context(|| format!("invalid policy {}", path.display()))?;
+    info!("policy loaded from {}", path.display());
+    Ok(policy)
 }
 
 #[tokio::main]
@@ -64,12 +92,22 @@ async fn main() -> Result<()> {
 
     let journal = Arc::new(Journal::open(&args.vault.join("journal.log"))?);
 
+    let policy = Arc::new(load_policy(args.policy.as_deref(), &vault)?);
+    let ip = &policy.global.integrity;
+    if ip.restore_source == "remote" {
+        warn!("restore_source \"remote\" is not implemented yet — using memory_then_store");
+    }
+    info!(
+        "tracked files: approval = {} (namespaces may override)",
+        ip.approval.as_str()
+    );
+
     // ── Fix 1: warm VerifiedCache off the tokio executor via spawn_blocking ──
     // warm_from_vault() does synchronous directory traversal + file I/O.
     // Running it directly on the async executor would starve other tasks.
     // We build the cache in a dedicated blocking thread, then wrap it.
     let vault_for_warmup = vault.clone();
-    let cache_bytes = args.cache_bytes;
+    let cache_bytes = args.cache_bytes.unwrap_or(ip.cache_budget_bytes);
     let warmed_cache = tokio::task::spawn_blocking(move || {
         let mut cache = VerifiedCache::new(cache_bytes);
         match cache.warm_from_vault(&vault_for_warmup) {
@@ -94,14 +132,18 @@ async fn main() -> Result<()> {
     let guard = {
         let (v, j, c) = (vault.clone(), journal.clone(), cache.clone());
         let (threshold, window, debounce, escalate) = (
-            args.violation_threshold,
-            args.violation_window_secs,
-            args.debounce_ms,
-            args.escalate_after_restores,
+            args.violation_threshold
+                .unwrap_or(ip.write_violation_threshold),
+            args.violation_window_secs
+                .unwrap_or(ip.violation_window_secs),
+            args.debounce_ms.unwrap_or(ip.debounce_ms),
+            args.escalate_after_restores
+                .unwrap_or(ip.escalate_after_restores),
         );
+        let order = RestoreOrder::from_policy(&ip.restore_source);
         tokio::task::spawn_blocking(move || {
             IntegrityGuard::new(
-                v, j, c, alert_tx, threshold, window, debounce, true, escalate,
+                v, j, c, alert_tx, threshold, window, debounce, true, escalate, order,
             )
         })
         .await?
@@ -129,8 +171,9 @@ async fn main() -> Result<()> {
     {
         let v2 = vault.clone();
         let g2 = guard.clone();
+        let p2 = policy.clone();
         tokio::spawn(async move {
-            WatcherService::new(v2, g2).run().await;
+            WatcherService::new(v2, g2, p2).run().await;
         });
     }
 

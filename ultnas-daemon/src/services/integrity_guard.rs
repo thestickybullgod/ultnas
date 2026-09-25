@@ -7,20 +7,31 @@
 //!                          │
 //!                    debounce (N ms)
 //!                          │
-//!                    count within rolling window >= threshold?
-//!                         YES
-//!                          │
 //!                    namespace quarantined? ── YES ──► detect + journal only
+//!                          │
+//!                    count within rolling window >= threshold?
+//!                          │
+//!                          NO ──► tracked file: prevent this write by stripping
+//!                          │      the invisible characters it introduced
+//!                          │      (sealed object: count only)
+//!                         YES
 //!                          │
 //!                    restore attempts >= escalate_after_restores?
 //!                         YES ──► journal IntegrityEscalate, then quarantine
 //!                          │
-//!                    restore:
+//!                    restore (delete and recreate):
 //!                      journal IntegrityRestoreIntent (write-ahead)
-//!                      L1 → VerifiedCache (hash-checked on admission)
-//!                      Vault::restore_object (hash-checked, atomic + fsync)
+//!                      verified copy: VerifiedCache, then the vault (tracked only)
+//!                      recreate_file / Vault::restore_object (atomic + fsync)
 //!                      journal IntegrityRestore / IntegrityRestoreFailed
 //! ```
+//!
+//! ## Targets
+//! A violation is either a sealed object in the vault's object store, or a
+//! *tracked* live file (see `ultnas_core::tracking`) that gained invisible
+//! characters, stopped being text, or was deleted. Clean edits of tracked
+//! files aren't violations; [`IntegrityGuard::record_clean_edit`] versions
+//! them per the approval mode.
 //!
 //! ## Threading
 //! Everything here is synchronous file I/O, so `IntegrityGuard` is a plain
@@ -28,9 +39,10 @@
 //! `spawn_blocking` — never lock it on an async worker thread.
 //!
 //! ## Restore sources
-//! L1 (VerifiedCache) is the only independent copy today. The object store
-//! can't be a restore source: the object *is* the file being restored. An L2
-//! tier (replica / pack / remote) slots in after L1 in [`IntegrityGuard::restore`].
+//! For a tracked file, both the VerifiedCache and the vault's copy of the
+//! stable version are independent of the live file, tried in the order
+//! `restore_source` sets. For a sealed object, the object *is* the file being
+//! restored, so only the cache can serve it.
 //!
 //! ## Journal failures (degraded mode)
 //! If the journal can't be written, the guard keeps detecting and keeps
@@ -46,15 +58,15 @@
 use chrono::{DateTime, Utc};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use ultnas_core::{
-    apply_quarantine_entry, ContentId, Journal, JournalEntry, JournalOp, QuarantineChange,
-    UltnasCoreError, Vault,
+    apply_quarantine_entry, invisible, recreate_file, rewrite_file, ApprovalMode, ContentId,
+    Journal, JournalEntry, JournalOp, QuarantineChange, TrackedFile, UltnasCoreError, Vault,
 };
 
 use super::verified_cache::SharedCache;
@@ -89,6 +101,16 @@ pub enum IntegrityAlert {
         path: PathBuf,
         reason: String,
     },
+    Sanitized {
+        path: PathBuf,
+        removed: usize,
+    },
+    VersionAccepted {
+        path: PathBuf,
+    },
+    VersionPending {
+        path: PathBuf,
+    },
     NamespaceQuarantined {
         namespace: String,
     },
@@ -100,21 +122,71 @@ pub enum IntegrityAlert {
 #[derive(Debug, Clone)]
 pub enum RestoreSource {
     MemoryCache,
+    VaultStore,
 }
 
 impl RestoreSource {
     fn as_str(&self) -> &'static str {
         match self {
             RestoreSource::MemoryCache => "memory_cache",
+            RestoreSource::VaultStore => "vault_store",
         }
     }
 }
 
-/// A sealed record whose object no longer matches its ContentId.
+/// Which verified copies a restore may use, in order (policy `restore_source`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreOrder {
+    Memory,
+    Store,
+    MemoryThenStore,
+}
+
+impl RestoreOrder {
+    /// Parse a validated policy value. `"remote"` isn't implemented yet and
+    /// behaves like the default.
+    pub fn from_policy(source: &str) -> Self {
+        match source {
+            "memory" => RestoreOrder::Memory,
+            "store" => RestoreOrder::Store,
+            _ => RestoreOrder::MemoryThenStore,
+        }
+    }
+}
+
+/// What a violation is about.
+#[derive(Debug, Clone)]
+pub enum Target {
+    /// A sealed object in the vault's object store.
+    Object,
+    /// A tracked live file. `baseline` is its newest clean version, which the
+    /// write is compared against; [`Violation::id`] is the stable version a
+    /// restore recreates.
+    Tracked { path: PathBuf, baseline: ContentId },
+}
+
+/// Content that no longer matches the version it should be.
 #[derive(Debug, Clone)]
 pub struct Violation {
     pub id: ContentId,
     pub namespace: String,
+    pub target: Target,
+}
+
+impl Violation {
+    fn path(&self, vault: &Vault) -> PathBuf {
+        match &self.target {
+            Target::Object => vault.object_path(&self.id),
+            Target::Tracked { path, .. } => path.clone(),
+        }
+    }
+
+    fn live_path(&self) -> Option<PathBuf> {
+        match &self.target {
+            Target::Object => None,
+            Target::Tracked { path, .. } => Some(path.clone()),
+        }
+    }
 }
 
 // ─── ViolationTracker ────────────────────────────────────────────────────────
@@ -234,7 +306,8 @@ pub struct IntegrityGuard {
     cache: SharedCache,
     quarantine: QuarantineRegistry,
     alert_tx: mpsc::Sender<IntegrityAlert>,
-    trackers: HashMap<ContentId, ViolationTracker>,
+    /// Keyed by the file being protected (object path or live path).
+    trackers: HashMap<PathBuf, ViolationTracker>,
     /// Entries that failed to reach the journal. Non-empty means degraded.
     pending_journal: VecDeque<JournalEntry>,
     dropped_journal_entries: u64,
@@ -244,6 +317,7 @@ pub struct IntegrityGuard {
     debounce: Duration,
     auto_restore: bool,
     escalate_after_restores: u32,
+    restore_order: RestoreOrder,
 }
 
 impl IntegrityGuard {
@@ -260,6 +334,7 @@ impl IntegrityGuard {
         debounce_ms: u64,
         auto_restore: bool,
         escalate_after_restores: u32,
+        restore_order: RestoreOrder,
     ) -> Self {
         let mut guard = Self {
             vault,
@@ -276,6 +351,7 @@ impl IntegrityGuard {
             debounce: Duration::from_millis(debounce_ms),
             auto_restore,
             escalate_after_restores,
+            restore_order,
         };
         guard.sync_quarantine();
         guard
@@ -310,15 +386,16 @@ impl IntegrityGuard {
         self.dropped_alerts
     }
 
-    /// Called by WatcherService for every sealed record that fails verification.
+    /// Called by WatcherService for every sealed record that fails
+    /// verification and every tracked file written with invisible characters.
     pub fn record_violation(&mut self, v: Violation) {
         let now = Instant::now();
         self.flush_pending_journal();
-        let path = self.vault.object_path(&v.id);
+        let path = v.path(&self.vault);
 
         let tracker = self
             .trackers
-            .entry(v.id)
+            .entry(path.clone())
             .or_insert_with(|| ViolationTracker {
                 namespace: v.namespace.clone(),
                 count: 0,
@@ -359,12 +436,25 @@ impl IntegrityGuard {
             format!("violation_count={count}"),
         ));
 
-        // Quarantined namespaces are watched and journaled, never auto-restored.
-        if self.quarantine.is_quarantined(&v.namespace) {
+        // Quarantined namespaces are watched and journaled, never repaired.
+        if self.quarantine.is_quarantined(&v.namespace) || !self.auto_restore {
             return;
         }
-        if count < self.violation_threshold || !self.auto_restore {
-            return;
+
+        if count < self.violation_threshold {
+            // Below the threshold, prevent the write: strip what it added.
+            let Target::Tracked { baseline, .. } = &v.target else {
+                return;
+            };
+            let baseline = *baseline;
+            if self.is_degraded() {
+                self.repair_suspended(path);
+                return;
+            }
+            if self.sanitize(&v, &path, baseline) {
+                return;
+            }
+            // Deleted, or no longer text: nothing to strip, so recreate it.
         }
 
         if restores >= self.escalate_after_restores {
@@ -372,28 +462,236 @@ impl IntegrityGuard {
             return;
         }
         if self.is_degraded() {
-            warn!(
-                "IntegrityGuard: journal unavailable — not restoring {}",
-                path.display()
-            );
-            self.alert(IntegrityAlert::RestoreFailed {
-                path,
-                reason: "journal unavailable — auto-restore suspended".into(),
-            });
+            self.repair_suspended(path);
             return;
         }
         self.restore(&v, path);
     }
 
-    fn restore(&mut self, v: &Violation, path: PathBuf) {
-        let source = RestoreSource::MemoryCache;
+    /// A tracked file changed with no invisible characters added: an ordinary
+    /// edit. Store it as the stable version or as pending, per `mode`.
+    pub fn record_clean_edit(&mut self, seen: &TrackedFile, content: Vec<u8>, mode: ApprovalMode) {
+        self.flush_pending_journal();
+        // Never change state we can't record; the next scan retries.
+        if self.is_degraded() {
+            debug!(
+                "IntegrityGuard: journal unavailable — not versioning {}",
+                seen.path.display()
+            );
+            return;
+        }
 
-        // Write-ahead: never touch the object store without a record of intent.
+        let vault = self.vault.clone();
+        let result = vault.update_tracked(&seen.path, |state| {
+            // Re-check under the lock: the CLI may have approved or untracked it.
+            let Some(t) = state
+                .as_mut()
+                .filter(|t| t.stable == seen.stable && t.pending == seen.pending)
+            else {
+                return Ok(None);
+            };
+            let id = vault.write_version(&t.namespace, &t.path, &content)?;
+            match mode {
+                ApprovalMode::Automatic => {
+                    t.stable = id;
+                    t.pending = None;
+                }
+                ApprovalMode::Approved => t.pending = Some(id),
+            }
+            t.updated_at = Utc::now();
+            Ok(Some(id))
+        });
+
+        let id = match result {
+            Ok(Some(id)) => id,
+            Ok(None) => return,
+            Err(e) => {
+                warn!(
+                    "IntegrityGuard: could not version {}: {}",
+                    seen.path.display(),
+                    e
+                );
+                return;
+            }
+        };
+        let size = content.len() as u64;
+        lock(&self.cache).insert(id, content);
+
+        let path = seen.path.clone();
+        let (op, alert) = match mode {
+            ApprovalMode::Automatic => {
+                info!("IntegrityGuard: accepted clean edit of {}", path.display());
+                (
+                    JournalOp::VersionAccepted,
+                    IntegrityAlert::VersionAccepted { path: path.clone() },
+                )
+            }
+            ApprovalMode::Approved => {
+                info!(
+                    "IntegrityGuard: clean edit of {} is pending approval",
+                    path.display()
+                );
+                (
+                    JournalOp::VersionPending,
+                    IntegrityAlert::VersionPending { path: path.clone() },
+                )
+            }
+        };
+        self.journal_write(journal_entry(
+            op,
+            id,
+            seen.namespace.as_str(),
+            Some(path),
+            Some(size),
+            format!("approval={}", mode.as_str()),
+        ));
+        self.alert(alert);
+    }
+
+    /// Keep a tracked file's stable and pending versions in memory, so a
+    /// restore doesn't depend on the vault's copy (or it on the cache).
+    pub fn ensure_cached(&mut self, t: &TrackedFile) {
+        for id in [Some(t.stable), t.pending].into_iter().flatten() {
+            if lock(&self.cache).contains(&id) {
+                continue;
+            }
+            match self.vault.read_verified(&id) {
+                Ok(data) => {
+                    lock(&self.cache).insert(id, data);
+                }
+                Err(e) => warn!(
+                    "IntegrityGuard: no verified vault copy of {} for {}: {}",
+                    id,
+                    t.path.display(),
+                    e
+                ),
+            }
+        }
+    }
+
+    /// A verified copy of `id`, from the sources `restore_order` allows.
+    /// The vault is only independent of tracked files (`allow_store`).
+    pub fn verified_copy(
+        &mut self,
+        id: &ContentId,
+        allow_store: bool,
+    ) -> Option<(Arc<[u8]>, RestoreSource)> {
+        let try_memory = !allow_store || self.restore_order != RestoreOrder::Store;
+        let try_store = allow_store && self.restore_order != RestoreOrder::Memory;
+        if try_memory {
+            // Only the Arc is cloned under the lock.
+            if let Some(data) = lock(&self.cache).get(id) {
+                return Some((data, RestoreSource::MemoryCache));
+            }
+        }
+        if try_store {
+            match self.vault.read_verified(id) {
+                Ok(data) => return Some((data.into(), RestoreSource::VaultStore)),
+                Err(e) => debug!("IntegrityGuard: vault copy of {} unusable: {}", id, e),
+            }
+        }
+        None
+    }
+
+    /// Strip the invisible characters a write added to a tracked file.
+    /// Returns `false` if there was nothing to strip because the file is
+    /// missing or not text, so the caller should recreate it instead.
+    fn sanitize(&mut self, v: &Violation, path: &Path, baseline: ContentId) -> bool {
+        let Ok(live) = std::fs::read(path) else {
+            return false;
+        };
+        let Ok(live) = String::from_utf8(live) else {
+            return false;
+        };
+        let base = match self.verified_copy(&baseline, true) {
+            Some((data, _)) => String::from_utf8_lossy(&data).into_owned(),
+            None => {
+                warn!(
+                    "IntegrityGuard: no verified baseline for {} — stripping every invisible character",
+                    path.display()
+                );
+                String::new()
+            }
+        };
+        let found = invisible::introduced(&base, &live);
+        let Some(first) = found.first() else {
+            // Rewritten cleanly since the watcher looked.
+            return true;
+        };
+        let detail = format!("removed={} first={}", found.len(), first);
+
         if !self.journal_write(entry(
             JournalOp::IntegrityRestoreIntent,
             v,
             None,
-            format!("source={}", source.as_str()),
+            format!("action=sanitize {detail}"),
+        )) {
+            self.repair_suspended(path.to_path_buf());
+            return true;
+        }
+        let cleaned = invisible::strip_introduced(&base, &live);
+        match rewrite_file(path, cleaned.as_bytes()) {
+            Ok(()) => {
+                warn!(
+                    "IntegrityGuard: stripped invisible characters from {} ({})",
+                    path.display(),
+                    detail
+                );
+                self.journal_write(entry(
+                    JournalOp::IntegritySanitize,
+                    v,
+                    Some(found.len() as u64),
+                    detail,
+                ));
+                self.alert(IntegrityAlert::Sanitized {
+                    path: path.to_path_buf(),
+                    removed: found.len(),
+                });
+            }
+            Err(e) => {
+                error!(
+                    "IntegrityGuard: could not sanitize {}: {}",
+                    path.display(),
+                    e
+                );
+                self.journal_write(entry(
+                    JournalOp::IntegrityRestoreFailed,
+                    v,
+                    None,
+                    format!("action=sanitize {e}"),
+                ));
+                self.alert(IntegrityAlert::RestoreFailed {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                });
+            }
+        }
+        true
+    }
+
+    fn repair_suspended(&mut self, path: PathBuf) {
+        warn!(
+            "IntegrityGuard: journal unavailable — not repairing {}",
+            path.display()
+        );
+        self.alert(IntegrityAlert::RestoreFailed {
+            path,
+            reason: "journal unavailable — auto-restore suspended".into(),
+        });
+    }
+
+    /// Delete the damaged file and recreate it from a verified copy.
+    fn restore(&mut self, v: &Violation, path: PathBuf) {
+        let tracked = matches!(v.target, Target::Tracked { .. });
+        let copy = self.verified_copy(&v.id, tracked);
+        let source_name = copy.as_ref().map_or("none", |(_, s)| s.as_str());
+
+        // Write-ahead: never touch the file without a record of intent.
+        if !self.journal_write(entry(
+            JournalOp::IntegrityRestoreIntent,
+            v,
+            None,
+            format!("source={source_name}"),
         )) {
             self.alert(IntegrityAlert::RestoreFailed {
                 path,
@@ -402,27 +700,36 @@ impl IntegrityGuard {
             return;
         }
 
-        if let Some(t) = self.trackers.get_mut(&v.id) {
+        if let Some(t) = self.trackers.get_mut(&path) {
             t.restores += 1;
         }
 
-        // L1: VerifiedCache. Only the Arc is cloned under the lock.
-        let cached = lock(&self.cache).get(&v.id);
-        let result = match cached {
-            Some(data) => self
-                .vault
-                .restore_object(&v.id, &data)
-                .map(|()| data.len() as u64),
+        let result = match copy {
+            Some((data, source)) => {
+                let written = match &v.target {
+                    Target::Object => self.vault.restore_object(&v.id, &data),
+                    Target::Tracked { .. } => recreate_file(&path, &data),
+                };
+                written.map(|()| (data.len() as u64, source))
+            }
             None => Err(UltnasCoreError::RestoreFailed {
                 id: v.id.to_hex(),
-                reason: "not in L1 cache and no independent L2 source is configured".into(),
+                reason: if tracked {
+                    "no verified copy in memory or the vault".into()
+                } else {
+                    "not in the memory cache, and a sealed object has no independent copy".into()
+                },
             }),
         };
 
         match result {
-            Ok(size) => {
-                info!("IntegrityGuard: restored {} from L1 cache", path.display());
-                if let Some(t) = self.trackers.get_mut(&v.id) {
+            Ok((size, source)) => {
+                info!(
+                    "IntegrityGuard: restored {} from {}",
+                    path.display(),
+                    source.as_str()
+                );
+                if let Some(t) = self.trackers.get_mut(&path) {
                     t.count = 0;
                 }
                 self.journal_write(entry(
@@ -537,15 +844,26 @@ impl IntegrityGuard {
 }
 
 fn entry(op: JournalOp, v: &Violation, size: Option<u64>, detail: String) -> JournalEntry {
+    journal_entry(op, v.id, v.namespace.clone(), v.live_path(), size, detail)
+}
+
+fn journal_entry(
+    op: JournalOp,
+    id: ContentId,
+    namespace: String,
+    path: Option<PathBuf>,
+    size: Option<u64>,
+    detail: String,
+) -> JournalEntry {
     JournalEntry {
         ts: Utc::now(),
         op,
-        id: Some(v.id),
-        ns: Some(v.namespace.clone()),
+        id: Some(id),
+        ns: Some(namespace),
         label: None,
         size,
         detail: Some(detail),
-        path: None,
+        path,
     }
 }
 
@@ -592,10 +910,12 @@ mod tests {
             0,
             true,
             1,
+            RestoreOrder::MemoryThenStore,
         );
         let v = Violation {
             id: record.id,
             namespace: "docs".into(),
+            target: Target::Object,
         };
         Fixture {
             _dir: dir,
