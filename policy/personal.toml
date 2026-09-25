@@ -1,0 +1,30 @@
+# Ultnas — Personal Archive Policy
+# Relaxed conflict handling, generous retention, no seal required.
+
+version = 1
+
+[global]
+conflict                     = "version"
+max_record_size_bytes        = 1073741824  # 1 GiB
+require_seal_before_rotation = false
+
+[[namespaces]]
+path = "photos"
+
+  [namespaces.retention]
+  keep_versions = 100
+
+[[namespaces]]
+path = "documents"
+
+  [namespaces.retention]
+  keep_versions = 50
+  keep_days     = 36500  # 100 years
+
+[[namespaces]]
+path = "scratch"
+conflict = "replace"
+
+  [namespaces.retention]
+  keep_versions = 1
+  keep_days     = 30

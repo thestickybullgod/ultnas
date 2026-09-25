@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "ultnas-core",
+    "ultnas-cli",
+    "ultnas-daemon",
+]
+
+[workspace.package]
+version       = "0.1.0"
+edition       = "2021"
+rust-version  = "1.80"
+authors       = ["Dustin Wayne Deen <sovereignarchivist@outlook.com>"]
+license       = "MIT"
+repository    = "https://github.com/sovereignarchivist/ultnas"
+homepage      = "https://github.com/sovereignarchivist/ultnas"
+
+[workspace.dependencies]
+blake3            = "1.5"
+ed25519-dalek     = "2.1"
+rand              = "0.8"
+serde             = { version = "1", features = ["derive"] }
+serde_json        = "1"
+toml              = "0.8"
+thiserror         = "1"
+anyhow            = "1"
+tokio             = { version = "1", features = ["full"] }
+clap              = { version = "4", features = ["derive", "color", "env"] }
+tracing           = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+chrono            = { version = "0.4", features = ["serde"] }
+walkdir           = "2"
+tempfile          = "3"
+hex               = "0.4"
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+strip         = "symbols"

@@ -1,0 +1,26 @@
+# Ultnas — Default Policy
+# See docs/POLICY_GUIDE.md for full reference.
+
+version = 1
+
+[global]
+conflict                     = "version"
+max_record_size_bytes        = 524288000   # 500 MiB
+require_seal_before_rotation = false
+
+[[namespaces]]
+path     = "documents"
+conflict = "version"
+tags_required = []
+
+  [namespaces.retention]
+  keep_versions = 20
+  keep_days     = 3650   # 10 years
+
+[[namespaces]]
+path     = "scratch"
+conflict = "replace"
+
+  [namespaces.retention]
+  keep_versions = 1
+  keep_days     = 30

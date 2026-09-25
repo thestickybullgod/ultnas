@@ -1,0 +1,11 @@
+# Global owner
+* @sovereignarchivist
+
+# Core library — stricter review
+/ultnas-core/ @sovereignarchivist
+
+# Documentation
+/docs/ @sovereignarchivist
+
+# CI/CD
+/.github/ @sovereignarchivist

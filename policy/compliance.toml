@@ -1,0 +1,34 @@
+# Ultnas — Compliance / Legal Archive Policy
+# High-retention, seal-required, conflict-rejected.
+
+version = 1
+
+[global]
+conflict                     = "reject"
+max_record_size_bytes        = 209715200   # 200 MiB
+require_seal_before_rotation = true
+
+[[namespaces]]
+path          = "legal"
+conflict      = "version"
+tags_required = ["matter", "classification"]
+
+  [namespaces.retention]
+  keep_versions = 999
+  keep_days     = 2555   # ~7 years
+
+[[namespaces]]
+path          = "finance"
+conflict      = "version"
+tags_required = ["fiscal_year", "document_type"]
+
+  [namespaces.retention]
+  keep_days = 2555
+
+[[namespaces]]
+path          = "hr"
+conflict      = "version"
+tags_required = ["employee_id", "document_type"]
+
+  [namespaces.retention]
+  keep_days = 2555

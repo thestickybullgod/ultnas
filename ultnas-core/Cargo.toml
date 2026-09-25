@@ -1,0 +1,23 @@
+[package]
+name         = "ultnas-core"
+description  = "Core library for the Ultnas sovereign archiving system"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3        = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+toml          = { workspace = true }
+thiserror     = { workspace = true }
+chrono        = { workspace = true }
+walkdir       = { workspace = true }
+hex           = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
