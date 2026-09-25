@@ -35,6 +35,7 @@ pub mod mirror;
 pub mod namespace;
 pub mod policy;
 pub mod record;
+pub mod retention;
 pub mod tracking;
 pub mod vault;
 

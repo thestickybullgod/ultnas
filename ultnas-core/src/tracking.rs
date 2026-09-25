@@ -303,6 +303,28 @@ impl Vault {
         self.locked_update(&self.tracked_entry_path(path, "tdir"), f)
     }
 
+    /// Run `f` holding the tracking lock, so no tracked file's state changes
+    /// meanwhile. `f` must not call [`Vault::update_tracked`] (it would wait
+    /// on the lock it holds).
+    pub fn with_tracking_lock<T>(
+        &self,
+        f: impl FnOnce() -> Result<T, UltnasCoreError>,
+    ) -> Result<T, UltnasCoreError> {
+        let _lock = self.tracking_lock()?;
+        f()
+    }
+
+    fn tracking_lock(&self) -> Result<fs::File, UltnasCoreError> {
+        fs::create_dir_all(self.tracked_dir())?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.tracked_dir().join(".lock"))?;
+        lock.lock()?;
+        Ok(lock)
+    }
+
     /// Read-modify-write one entry under the tracking lock.
     fn locked_update<S, T>(
         &self,
@@ -312,13 +334,7 @@ impl Vault {
     where
         S: Serialize + DeserializeOwned + Clone + PartialEq,
     {
-        fs::create_dir_all(self.tracked_dir())?;
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.tracked_dir().join(".lock"))?;
-        lock.lock()?;
+        let lock = self.tracking_lock()?;
 
         let before = match fs::read(entry_path) {
             Ok(raw) => Some(

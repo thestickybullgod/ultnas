@@ -177,7 +177,16 @@ never count against it.
 
 ## Retention Policies
 
-Both `keep_versions` and `keep_days` may be set simultaneously. Records that fail **either** condition are eligible for purging. Purging only occurs when the daemon runs a scheduled rotation or when `ultnas purge --rotate` is called.
+Both `keep_versions` and `keep_days` may be set simultaneously. Records that fail **either** condition are eligible for purging. Purging only occurs when the daemon runs its hourly rotation (first a minute after it starts) or when `ultnas purge --rotate` is called (`--dry-run` to preview; it asks before purging unless `--yes`).
+
+- `keep_days` purges records created more than that many days ago.
+- `keep_versions` keeps the newest N versions of each *series*: one tracked file's history, or, for other records, one label in the namespace. Two tracked files that share a name are separate series.
+- The most specific namespace with a `retention` table applies (`docs` covers `docs/2026`, not `docsX`).
+- With `require_seal_before_rotation = true`, only sealed records are purged.
+- A tracked file's current stable or pending version is never purged, though it counts toward `keep_versions`.
+- Each purge is journaled (`PURGE_RECORD`) before the record is removed, and removed from the mirror too. The daemon skips rotation while its journal is unwritable.
+
+`ultnas purge <id>` removes one record, and refuses a tracked file's current version.
 
 ```toml
 [namespaces.retention]

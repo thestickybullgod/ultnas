@@ -148,6 +148,46 @@ impl Vault {
         Ok(out)
     }
 
+    /// The vault's policy: `explicit` if given, else the manifest's
+    /// `policy_path` (relative to the vault root), else `None` (built-in
+    /// defaults). Returns the policy with the file it came from.
+    pub fn load_policy(
+        &self,
+        explicit: Option<&Path>,
+    ) -> Result<Option<(crate::Policy, PathBuf)>, UltnasCoreError> {
+        let path = explicit.map(Path::to_path_buf).or_else(|| {
+            self.manifest
+                .policy_path
+                .as_ref()
+                .map(|p| self.root.join(p))
+        });
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let raw = fs::read_to_string(&path)?;
+        let policy = crate::Policy::from_toml(&raw)
+            .map_err(|e| UltnasCoreError::InvalidPolicy(format!("{}: {e}", path.display())))?;
+        Ok(Some((policy, path)))
+    }
+
+    /// Remove a record: its metadata, content object, and seal file. Missing
+    /// pieces are fine. The caller journals the purge first.
+    pub fn purge_record(&self, id: &ContentId) -> Result<(), UltnasCoreError> {
+        let hex = id.to_hex();
+        for path in [
+            self.root.join("records").join(format!("{hex}.json")),
+            self.object_path(id),
+            self.root.join("seals").join(format!("{hex}.seal")),
+        ] {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+
     /// Verify a record's on-disk content matches its ContentId.
     pub fn verify(&self, id: &ContentId) -> Result<(), UltnasCoreError> {
         let content = self.read_content(id)?;

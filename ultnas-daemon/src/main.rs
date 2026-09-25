@@ -64,26 +64,18 @@ struct Args {
     no_log_file: bool,
 }
 
-/// `--policy`, else the manifest's `policy_path` (relative to the vault root),
-/// else the built-in defaults.
+/// `--policy`, else the manifest's `policy_path`, else built-in defaults.
 fn load_policy(explicit: Option<&Path>, vault: &Vault) -> Result<Policy> {
-    let path = explicit.map(Path::to_path_buf).or_else(|| {
-        vault
-            .manifest()
-            .policy_path
-            .as_ref()
-            .map(|p| vault.root().join(p))
-    });
-    let Some(path) = path else {
-        info!("no policy configured — using built-in defaults");
-        return Ok(Policy::default());
-    };
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading policy {}", path.display()))?;
-    let policy =
-        Policy::from_toml(&raw).with_context(|| format!("invalid policy {}", path.display()))?;
-    info!("policy loaded from {}", path.display());
-    Ok(policy)
+    match vault.load_policy(explicit).context("loading the policy")? {
+        Some((policy, path)) => {
+            info!("policy loaded from {}", path.display());
+            Ok(policy)
+        }
+        None => {
+            info!("no policy configured — using built-in defaults");
+            Ok(Policy::default())
+        }
+    }
 }
 
 /// Whether two paths are on one filesystem (Unix; elsewhere unknown: false).
@@ -207,7 +199,7 @@ async fn main() -> Result<()> {
     let mirror_path = args
         .mirror
         .clone()
-        .or_else(|| ip.mirror.as_ref().map(|p| vault.root().join(p)));
+        .or_else(|| policy.mirror_path(vault.root()));
     if let Some(path) = mirror_path {
         let mirror = Arc::new(
             ultnas_core::Mirror::open(&path)
@@ -247,13 +239,16 @@ async fn main() -> Result<()> {
         status
     };
 
-    // Scheduler
-    {
-        let v2 = vault.clone();
-        tokio::spawn(async move {
-            Scheduler::new(v2.root().to_path_buf()).run().await;
-        });
-    }
+    // Scheduler — applies retention
+    tokio::spawn(
+        Scheduler::new(
+            vault.clone(),
+            journal.clone(),
+            policy.clone(),
+            guard.clone(),
+        )
+        .run(),
+    );
 
     // PolicyEnforcer — reports quarantine state held by IntegrityGuard
     {

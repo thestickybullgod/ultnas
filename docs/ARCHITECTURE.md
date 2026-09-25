@@ -62,7 +62,7 @@ Ultnas is a three-tier system: a **core library**, a **CLI**, and a **background
 | `verify` | Verify content integrity against stored hashes |
 | `ls` | List records with namespace and tag filtering |
 | `export` | Export records to an external format |
-| `purge` | Remove records per policy or explicit ID |
+| `purge` | Remove a record by id, or apply retention with `--rotate` (`--dry-run` to preview) |
 | `policy validate` | Validate a policy TOML file |
 | `setup` | Choose recommended files and directories to protect (shell startup, SSH, Git, scripts, source, `/etc` as root) |
 | `track` / `untrack` | Protect a live text file (or, with `--recursive`, a directory) in place, or stop |
@@ -75,7 +75,7 @@ Ultnas is a three-tier system: a **core library**, a **CLI**, and a **background
 | Service | Description |
 |---|---|
 | `WatcherService` | Checks tracked files on file-system events (inotify / FSEvents / ReadDirectoryChangesW), with a periodic full scan of tracked files and sealed objects as backstop |
-| `SchedulerService` | Cron-style rotation and cleanup scheduling |
+| `Scheduler` | Hourly retention: purges records past `keep_days` and versions beyond `keep_versions`, never a tracked file's current version |
 | `PolicyEnforcer` | Periodic policy compliance scans |
 | `SyncService` | Optional remote vault synchronization (off by default) |
 | `IpcServer` | Unix socket IPC server for CLI ↔ daemon communication |

@@ -244,6 +244,15 @@ impl Policy {
         Ok(())
     }
 
+    /// The configured mirror directory, resolved against the vault root.
+    pub fn mirror_path(&self, vault_root: &std::path::Path) -> Option<std::path::PathBuf> {
+        self.global
+            .integrity
+            .mirror
+            .as_ref()
+            .map(|p| vault_root.join(p))
+    }
+
     /// Approval mode for tracked files in `namespace`: the most specific
     /// namespace entry that sets one, else the global setting.
     pub fn approval_for(&self, namespace: &NamespacePath) -> ApprovalMode {
@@ -257,6 +266,21 @@ impl Policy {
             .max_by_key(|np| np.path.len())
             .and_then(|np| np.approval)
             .unwrap_or(self.global.integrity.approval)
+    }
+
+    /// Retention for records in `namespace`: the most specific namespace
+    /// entry that sets one (segment-aware: `docs` covers `docs/2026`, not
+    /// `docsX`).
+    pub fn retention_for(&self, namespace: &NamespacePath) -> Option<&RetentionPolicy> {
+        let ns = namespace.as_str();
+        self.namespaces
+            .iter()
+            .filter(|np| np.retention.is_some())
+            .filter(|np| {
+                np.path.is_empty() || ns == np.path || ns.starts_with(&format!("{}/", np.path))
+            })
+            .max_by_key(|np| np.path.len())
+            .and_then(|np| np.retention.as_ref())
     }
 
     /// BLAKE3 hash of the canonical TOML serialization.
