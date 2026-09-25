@@ -32,6 +32,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - `invisible` module: detects zero-width, bidi, tag, filler, and other format characters, with context rules for legitimate non-ASCII uses (emoji ZWJ, ZWNJ, variation selectors, subdivision flags)
 - Policy `approval = "automatic" | "approved"` under `[global.integrity]`, overridable per namespace: clean edits become the stable version immediately, or stay pending until `ultnas approve`
 - Journal ops `TrackFile`, `UntrackFile`, `VersionAccepted`, `VersionPending`, `VersionApproved`, `IntegritySanitize`; entries carry an optional `path`
+- `ultnasd` logs to a daily-rotated file, `<vault>/logs/ultnasd.<date>.log` by default, as well as stdout; `--log-dir`, `--log-keep-days` (default 14), and `--no-log-file` control it. The file writer is lossless
 
 ### Changed
 - A write that arrived with invisible characters and also changed visible text is held as pending, even in `automatic` mode, so a clean-looking attacker edit can't slip in with it

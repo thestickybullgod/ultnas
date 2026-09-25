@@ -8,9 +8,9 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
 use ultnas_core::{Journal, Policy, Vault};
 
+mod logging;
 mod services;
 use services::{
     integrity_guard::{IntegrityGuard, RestoreOrder},
@@ -44,6 +44,15 @@ struct Args {
     escalate_after_restores: Option<u32>,
     #[arg(short, long)]
     verbose: bool,
+    /// Directory for the daily-rotated log file (default: <vault>/logs)
+    #[arg(long)]
+    log_dir: Option<PathBuf>,
+    /// How many daily log files to keep
+    #[arg(long, default_value_t = 14)]
+    log_keep_days: usize,
+    /// Log to stdout only (e.g. when a service manager already captures it)
+    #[arg(long, conflicts_with = "log_dir")]
+    no_log_file: bool,
 }
 
 /// `--policy`, else the manifest's `policy_path` (relative to the vault root),
@@ -71,16 +80,28 @@ fn load_policy(explicit: Option<&Path>, vault: &Vault) -> Result<Policy> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Open (and so validate) the vault before creating anything in it —
+    // log directory or lock file — but lock before anything else can write.
+    let vault = Arc::new(Vault::open(&args.vault)?);
+
     let log_level = if args.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(log_level))
-        .init();
+    let log_dir = args
+        .log_dir
+        .clone()
+        .unwrap_or_else(|| vault.root().join("logs"));
+    let file = (!args.no_log_file).then_some((log_dir.as_path(), args.log_keep_days));
+    // Flushes the log file when main returns.
+    let _log_guard = logging::init(log_level, file)?;
 
     info!("ultnasd starting — vault: {}", args.vault.display());
-
-    // Open (and so validate) the vault before creating the lock file in it,
-    // but lock before the journal or anything else can write.
-    let vault = Arc::new(Vault::open(&args.vault)?);
+    if !args.no_log_file {
+        info!(
+            "logging to {} (daily, keeping {} files)",
+            log_dir.display(),
+            args.log_keep_days
+        );
+    }
 
     // Held until main returns; the OS also releases it if we crash.
     let vault_lock = VaultLock::acquire(&args.vault)?;

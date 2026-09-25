@@ -156,6 +156,7 @@ Once sealed, record content is immutable. Metadata mutations are journaled.
 ├── journal.log         # Append-only operation journal (newline-delimited JSON)
 ├── seals/              # Detached seal files
 │   └── <ContentId>.seal
+├── logs/               # ultnasd.<date>.log, rotated daily (default: 14 kept)
 ├── tracked/            # Tracked live files (stable + pending version ids)
 │   ├── .lock           # Held briefly for every read-modify-write
 │   └── <hash of path>.json
