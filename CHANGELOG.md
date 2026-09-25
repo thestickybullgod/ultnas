@@ -34,6 +34,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Journal ops `TrackFile`, `UntrackFile`, `VersionAccepted`, `VersionPending`, `VersionApproved`, `IntegritySanitize`; entries carry an optional `path`
 
 ### Changed
+- A write that arrived with invisible characters and also changed visible text is held as pending, even in `automatic` mode, so a clean-looking attacker edit can't slip in with it
 - `ultnasd` loads its policy (`--policy`, else the manifest's `policy_path`, else defaults); integrity flags now override the policy instead of ignoring it
 - `restore_source` is honored for tracked files; `"remote"` falls back to `"memory_then_store"`
 - IntegrityGuard is now synchronous and runs, with the whole watcher scan, inside `spawn_blocking`

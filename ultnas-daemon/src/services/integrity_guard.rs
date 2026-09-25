@@ -34,6 +34,10 @@
 //! edits of tracked files aren't violations;
 //! [`IntegrityGuard::record_clean_edit`] versions them per the approval mode.
 //!
+//! A write that arrived with invisible characters is never trusted as an
+//! edit: if stripping them leaves visible changes too, the result is held as
+//! *pending* whatever the approval mode, so it needs `ultnas approve`.
+//!
 //! Every write to a live file passes the content id the guard inspected, and
 //! is abandoned if the file changed since, so a concurrent edit isn't lost.
 //!
@@ -678,6 +682,19 @@ impl IntegrityGuard {
                     path: path.to_path_buf(),
                     removed: found.len(),
                 });
+                // The same write changed visible text too. It arrived with
+                // invisible characters, so it's never trusted as an edit:
+                // hold it for approval whatever the mode.
+                if cleaned != base {
+                    let stable = v.id;
+                    self.store_version(
+                        path,
+                        |t| t.stable == stable && t.baseline() == baseline,
+                        cleaned.into_bytes(),
+                        ApprovalMode::Approved,
+                        "reason=arrived with invisible characters".into(),
+                    );
+                }
             }
             Err(e @ UltnasCoreError::ChangedDuringWrite(_)) => {
                 info!("IntegrityGuard: {} — rechecking on the next scan", e);

@@ -410,6 +410,26 @@ mod tests {
         assert!(f.vault.read_verified(&hash_bytes(edit.as_bytes())).is_ok());
     }
 
+    #[test]
+    fn tainted_edit_is_held_pending_even_in_automatic_mode() {
+        let f = fixture(ApprovalMode::Automatic, true);
+        // Visible change and an invisible character in the same write.
+        f.write("let is_admin = true;\u{200B}\n");
+        f.scan();
+        let stripped = "let is_admin = true;\n";
+        assert_eq!(f.read(), stripped);
+        let t = f.tracked();
+        assert_eq!(t.stable, f.stable, "must not be accepted automatically");
+        assert_eq!(t.pending, Some(hash_bytes(stripped.as_bytes())));
+        assert_eq!(f.count(JournalOp::VersionAccepted), 0);
+        assert_eq!(f.count(JournalOp::VersionPending), 1);
+
+        // Nothing further happens until it's approved.
+        f.scan();
+        assert_eq!(f.count(JournalOp::VersionPending), 1);
+        assert_eq!(f.read(), stripped);
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlink_replacement_is_recreated_without_following_it() {

@@ -84,6 +84,10 @@ A namespace's `approval` applies to it and every namespace under it; the most
 specific one wins. Daemon flags such as `--violation-threshold` override the
 policy's values.
 
+A write that arrives with invisible characters is never trusted as an edit.
+If stripping them leaves visible changes too, the result is held as pending
+whatever the `approval` setting, and needs `ultnas approve <file>`.
+
 Some invisible characters are legitimate next to non-ASCII text (ZWJ in
 emoji, ZWNJ in Persian and Indic scripts, variation selectors, subdivision
 flags). Those are flagged only between ASCII characters. Characters already in
