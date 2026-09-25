@@ -1,4 +1,4 @@
-<h1 align="center">Ultnas</h1>
+<h1 align="center">Ultnas — Universal Linux Text Normalizer and Sanitizer</h1>
 
 <p align="center">
   <strong>Sovereign, policy-driven digital archiving and namespace sovereignty — built in Rust.</strong>
