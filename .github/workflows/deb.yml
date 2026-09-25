@@ -80,7 +80,8 @@ jobs:
           wait "$pid"
 
           sudo apt-get remove -y ultnas
-          ! command -v ultnas
+          # (not `command -v`: bash caches the path it found earlier)
+          test ! -e /usr/bin/ultnas && test ! -e /usr/bin/ultnasd
 
       - uses: actions/upload-artifact@v4
         with:
