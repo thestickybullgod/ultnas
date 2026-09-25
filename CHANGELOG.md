@@ -60,6 +60,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Replacing a live file checks it is unchanged just before the rename, so an edit made while the daemon was inspecting it isn't overwritten
 
 ### Fixed
+- A write made while the daemon was starting could go unrepaired until the next full scan (up to 5 minutes): watches were registered only after the first full scan. They are now registered first
 - A quarantine lift issued while the daemon's journal was failing could be undone: the buffered escalation was written after the lift and "last entry wins" re-quarantined the namespace. An escalation older than a lift already applied is now ignored, by the daemon and the CLI alike
 - A violation within `debounce_ms` of the previous one was ignored entirely instead of only sharing its count, so a rapid burst of writes went unrepaired
 - Restore could rewrite a tampered object onto itself and report success (removed the object-store "L2" tier)

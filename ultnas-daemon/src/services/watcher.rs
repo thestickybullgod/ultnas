@@ -42,6 +42,9 @@
 //! `objects/xx/` prefix directory, and `records/` are watched, and an event
 //! names the content id it concerns, so only that record is verified.
 //!
+//! Watches are registered *before* the first full scan, so a write made
+//! while the daemon starts is caught either by that scan or by an event.
+//!
 //! A full scan (every sealed object and tracked file, and a walk of every
 //! tracked directory for files to adopt) runs at start, every
 //! `full_scan_interval`, and whenever the OS reports dropped events. If watching can't start at all,
@@ -189,8 +192,20 @@ impl WatcherService {
         }
         .into();
 
-        let mut interval = tokio::time::interval(period);
         let mut known = Known::default();
+        if let (Some(w), Some(r)) = (watches.as_mut(), roots.clone()) {
+            let vault = self.vault.clone();
+            match tokio::task::spawn_blocking(move || prime(&vault, &r)).await {
+                Ok(Some(primed)) => {
+                    w.sync(wanted_watches(roots.as_ref().unwrap(), &primed));
+                    known = primed;
+                }
+                Ok(None) => {}
+                Err(e) => error!("WatcherService: priming watches panicked: {}", e),
+            }
+        }
+
+        let mut interval = tokio::time::interval(period);
         loop {
             let job = tokio::select! {
                 _ = interval.tick() => Job::Full,
@@ -287,6 +302,21 @@ fn wanted_watches(roots: &Roots, known: &Known) -> HashSet<PathBuf> {
             roots.records_dir.clone(),
         ])
         .collect()
+}
+
+/// The tracked set and the directories to watch for it, without checking
+/// any file: what the watches need before the first full scan.
+fn prime(vault: &Vault, roots: &Roots) -> Option<Known> {
+    let (tracked, dirs) = match (vault.tracked_files(), vault.tracked_dirs()) {
+        (Ok(t), Ok(d)) => (t, d),
+        _ => return None,
+    };
+    Some(Known {
+        files: tracked.into_iter().map(|t| t.path).collect(),
+        watch_dirs: dirs.iter().flat_map(|d| d.subdirs(&d.path)).collect(),
+        dirs,
+        object_dirs: object_dirs(roots),
+    })
 }
 
 /// The `objects/xx/` prefix directories that exist now.
