@@ -404,7 +404,9 @@ mod tests {
         let bashrc = items.iter().find(|s| s.path.ends_with(".bashrc")).unwrap();
         assert_eq!(bashrc.unavailable, Some("already tracked"));
         if cfg!(unix) && Path::new("/etc").is_dir() {
-            let etc = items.iter().find(|s| s.path == Path::new("/etc")).unwrap();
+            // Canonical, since /etc is a link to /private/etc on macOS.
+            let etc_path = canonical_path(Path::new("/etc")).unwrap();
+            let etc = items.iter().find(|s| s.path == etc_path).unwrap();
             assert_eq!(etc.unavailable, Some("requires root"));
             assert!(!etc.recommended);
         }
