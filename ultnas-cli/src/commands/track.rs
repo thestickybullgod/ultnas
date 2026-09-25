@@ -11,8 +11,8 @@ use chrono::Utc;
 use clap::Args;
 use std::path::{Path, PathBuf};
 use ultnas_core::{
-    canonical_path, hash_bytes, invisible, rewrite_file, ContentId, Journal, JournalEntry,
-    JournalOp, NamespacePath, TrackedFile, Vault,
+    canonical_path, invisible, read_live, rewrite_file, ContentId, Journal, JournalEntry,
+    JournalOp, Live, NamespacePath, TrackedFile, Vault,
 };
 
 #[derive(Args)]
@@ -146,9 +146,10 @@ pub fn approve(vault_root: &Path, args: FileArg) -> Result<()> {
         "approved via CLI",
     )?;
     // The live file may have been restored to the old version since.
-    let live = std::fs::read(&path).ok();
-    if live.as_deref().map(hash_bytes) != Some(t.stable) {
-        rewrite_file(&path, &content)?;
+    let observed = read_live(&path)?.content_id();
+    if observed != Some(t.stable) {
+        rewrite_file(&path, &content, observed)
+            .with_context(|| format!("{} was approved, but rewriting it failed", path.display()))?;
         println!("  Rewrote {} with the approved version.", path.display());
     }
     println!("✓ Approved {}", path.display());
@@ -164,13 +165,15 @@ pub fn list(vault_root: &Path) -> Result<()> {
         return Ok(());
     }
     for t in tracked {
-        let status = match std::fs::read(&t.path) {
-            Err(_) => "missing".to_string(),
-            Ok(bytes) => {
-                let id = hash_bytes(&bytes);
-                if id == t.stable {
+        let status = match read_live(&t.path) {
+            Err(e) => format!("unreadable: {e}"),
+            Ok(Live::Missing) => "missing".to_string(),
+            Ok(Live::NotRegular) => "not a regular file".to_string(),
+            Ok(live) => {
+                let id = live.content_id();
+                if id == Some(t.stable) {
                     "ok".to_string()
-                } else if Some(id) == t.pending {
+                } else if id == t.pending {
                     "pending approval".to_string()
                 } else {
                     "changed — the daemon will check it".to_string()

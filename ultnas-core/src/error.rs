@@ -54,6 +54,11 @@ pub enum UltnasCoreError {
     #[error("journal error: {0}")]
     Journal(String),
 
+    /// A live file changed between being inspected and being replaced; the
+    /// replacement was abandoned so the newer write isn't lost.
+    #[error("{0} changed while it was being replaced")]
+    ChangedDuringWrite(PathBuf),
+
     /// Emitted by IntegrityGuard when all restore tiers are exhausted.
     #[error("restore failed for {id}: {reason}")]
     RestoreFailed { id: String, reason: String },

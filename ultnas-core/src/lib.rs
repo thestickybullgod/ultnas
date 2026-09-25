@@ -29,6 +29,7 @@ pub mod address;
 pub mod error;
 pub mod invisible;
 pub mod journal;
+pub mod live;
 pub mod namespace;
 pub mod policy;
 pub mod record;
@@ -61,7 +62,10 @@ pub use policy::{
 pub use record::{Record, RecordBuilder, RecordSeal};
 
 // vault
-pub use vault::{recreate_file, rewrite_file, Vault, VaultManifest};
+pub use vault::{Vault, VaultManifest};
+
+// live files
+pub use live::{read_live, recreate_file, rewrite_file, Live};
 
 // tracking
 pub use tracking::{canonical_path, TrackedFile};

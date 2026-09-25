@@ -6,8 +6,9 @@
 //!   its ContentId.
 //! - **Tracked files**: live text files outside the vault. A change that adds
 //!   no invisible characters is an ordinary edit, versioned per the policy's
-//!   approval mode. A change that adds some, makes the file non-text, or
-//!   deletes it is a violation.
+//!   approval mode. A change that adds some, makes the file non-text,
+//!   deletes it, or replaces it with a symbolic link or other non-regular
+//!   file is a violation. Links are never followed.
 //!
 //! Current implementation: polling on a 30-second interval (stub).
 //! v0.3 will integrate the `notify` crate for true inotify/FSEvents/RDCW support.
@@ -16,15 +17,12 @@
 //! whole scan — and the guard calls it makes — runs in `spawn_blocking`, off
 //! the async workers.
 
-use std::{
-    io::ErrorKind,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, warn};
 use ultnas_core::{
     hash_bytes,
     invisible::{classify_change, Change},
-    Policy, TrackedFile, Vault,
+    read_live, ContentId, Live, Policy, TrackedFile, Vault,
 };
 
 use super::integrity_guard::{lock, IntegrityGuard, Target, Violation};
@@ -111,9 +109,8 @@ fn scan_tracked(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
     };
 
     for t in tracked {
-        let live = match std::fs::read(&t.path) {
-            Ok(bytes) => Some(bytes),
-            Err(e) if e.kind() == ErrorKind::NotFound => None,
+        let live = match read_live(&t.path) {
+            Ok(live) => live,
             Err(e) => {
                 warn!("WatcherService: could not read {}: {}", t.path.display(), e);
                 continue;
@@ -123,13 +120,24 @@ fn scan_tracked(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
         let mut g = lock(guard);
         g.ensure_cached(&t);
 
-        let Some(live) = live else {
-            warn!(
-                "WatcherService: tracked file {} was deleted",
-                t.path.display()
-            );
-            g.record_violation(violation(&t));
-            continue;
+        let live = match live {
+            Live::File { content, .. } => content,
+            Live::Missing => {
+                warn!(
+                    "WatcherService: tracked file {} was deleted",
+                    t.path.display()
+                );
+                g.record_violation(violation(&t, None));
+                continue;
+            }
+            Live::NotRegular => {
+                warn!(
+                    "WatcherService: tracked file {} was replaced by a link or other non-regular file",
+                    t.path.display()
+                );
+                g.record_violation(violation(&t, None));
+                continue;
+            }
         };
         let id = hash_bytes(&live);
         if id == t.stable || Some(id) == t.pending {
@@ -158,26 +166,27 @@ fn scan_tracked(vault: &Vault, guard: &Mutex<IntegrityGuard>, policy: &Policy) {
                     t.path.display(),
                     found[0]
                 );
-                g.record_violation(violation(&t));
+                g.record_violation(violation(&t, Some(id)));
             }
             Change::NotText => {
                 warn!(
                     "WatcherService: tracked file {} is no longer UTF-8 text",
                     t.path.display()
                 );
-                g.record_violation(violation(&t));
+                g.record_violation(violation(&t, Some(id)));
             }
         }
     }
 }
 
-fn violation(t: &TrackedFile) -> Violation {
+fn violation(t: &TrackedFile, observed: Option<ContentId>) -> Violation {
     Violation {
         id: t.stable,
         namespace: t.namespace.as_str(),
         target: Target::Tracked {
             path: t.path.clone(),
             baseline: t.baseline(),
+            observed,
         },
     }
 }
@@ -399,6 +408,23 @@ mod tests {
         assert_eq!(f.read(), CLEAN);
         assert_eq!(f.tracked().pending, Some(hash_bytes(edit.as_bytes())));
         assert!(f.vault.read_verified(&hash_bytes(edit.as_bytes())).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_replacement_is_recreated_without_following_it() {
+        let f = fixture(ApprovalMode::Automatic, true);
+        let secret = f._dir.path().join("secret");
+        fs::write(&secret, "root only\n").unwrap();
+        fs::remove_file(&f.live).unwrap();
+        std::os::unix::fs::symlink(&secret, &f.live).unwrap();
+
+        f.scan();
+        assert!(fs::symlink_metadata(&f.live).unwrap().is_file());
+        assert_eq!(f.read(), CLEAN);
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "root only\n");
+        assert_eq!(f.tracked().stable, f.stable, "target must not be versioned");
+        assert_eq!(f.count(JournalOp::VersionAccepted), 0);
     }
 
     #[test]

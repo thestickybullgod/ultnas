@@ -29,9 +29,13 @@
 //! ## Targets
 //! A violation is either a sealed object in the vault's object store, or a
 //! *tracked* live file (see `ultnas_core::tracking`) that gained invisible
-//! characters, stopped being text, or was deleted. Clean edits of tracked
-//! files aren't violations; [`IntegrityGuard::record_clean_edit`] versions
-//! them per the approval mode.
+//! characters, stopped being text, was deleted, or was replaced by something
+//! other than a regular file (a symbolic link is never followed). Clean
+//! edits of tracked files aren't violations;
+//! [`IntegrityGuard::record_clean_edit`] versions them per the approval mode.
+//!
+//! Every write to a live file passes the content id the guard inspected, and
+//! is abandoned if the file changed since, so a concurrent edit isn't lost.
 //!
 //! ## Threading
 //! Everything here is synchronous file I/O, so `IntegrityGuard` is a plain
@@ -65,8 +69,9 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use ultnas_core::{
-    apply_quarantine_entry, invisible, recreate_file, rewrite_file, ApprovalMode, ContentId,
-    Journal, JournalEntry, JournalOp, QuarantineChange, TrackedFile, UltnasCoreError, Vault,
+    apply_quarantine_entry, hash_bytes, invisible, read_live, recreate_file, rewrite_file,
+    ApprovalMode, ContentId, Journal, JournalEntry, JournalOp, Live, QuarantineChange, TrackedFile,
+    UltnasCoreError, Vault,
 };
 
 use super::verified_cache::SharedCache;
@@ -161,8 +166,13 @@ pub enum Target {
     Object,
     /// A tracked live file. `baseline` is its newest clean version, which the
     /// write is compared against; [`Violation::id`] is the stable version a
-    /// restore recreates.
-    Tracked { path: PathBuf, baseline: ContentId },
+    /// restore recreates. `observed` is the content id the watcher saw
+    /// (`None`: missing or not a regular file); a restore only replaces that.
+    Tracked {
+        path: PathBuf,
+        baseline: ContentId,
+        observed: Option<ContentId>,
+    },
 }
 
 /// Content that no longer matches the version it should be.
@@ -471,23 +481,41 @@ impl IntegrityGuard {
     /// A tracked file changed with no invisible characters added: an ordinary
     /// edit. Store it as the stable version or as pending, per `mode`.
     pub fn record_clean_edit(&mut self, seen: &TrackedFile, content: Vec<u8>, mode: ApprovalMode) {
+        self.store_version(
+            &seen.path,
+            |t| t.stable == seen.stable && t.pending == seen.pending,
+            content,
+            mode,
+            format!("approval={}", mode.as_str()),
+        );
+    }
+
+    /// Record `content` as a version of the tracked file at `path`: stable
+    /// (automatic) or pending (approved). `unchanged` re-checks the state
+    /// under the tracking lock, since the CLI may have approved or untracked
+    /// the file meanwhile; if it fails, nothing happens and the next scan
+    /// looks again.
+    fn store_version(
+        &mut self,
+        path: &Path,
+        unchanged: impl Fn(&TrackedFile) -> bool,
+        content: Vec<u8>,
+        mode: ApprovalMode,
+        detail: String,
+    ) {
         self.flush_pending_journal();
         // Never change state we can't record; the next scan retries.
         if self.is_degraded() {
             debug!(
                 "IntegrityGuard: journal unavailable — not versioning {}",
-                seen.path.display()
+                path.display()
             );
             return;
         }
 
         let vault = self.vault.clone();
-        let result = vault.update_tracked(&seen.path, |state| {
-            // Re-check under the lock: the CLI may have approved or untracked it.
-            let Some(t) = state
-                .as_mut()
-                .filter(|t| t.stable == seen.stable && t.pending == seen.pending)
-            else {
+        let result = vault.update_tracked(path, |state| {
+            let Some(t) = state.as_mut().filter(|t| unchanged(t)) else {
                 return Ok(None);
             };
             let id = vault.write_version(&t.namespace, &t.path, &content)?;
@@ -499,16 +527,16 @@ impl IntegrityGuard {
                 ApprovalMode::Approved => t.pending = Some(id),
             }
             t.updated_at = Utc::now();
-            Ok(Some(id))
+            Ok(Some((id, t.namespace.as_str())))
         });
 
-        let id = match result {
-            Ok(Some(id)) => id,
+        let (id, namespace) = match result {
+            Ok(Some(stored)) => stored,
             Ok(None) => return,
             Err(e) => {
                 warn!(
                     "IntegrityGuard: could not version {}: {}",
-                    seen.path.display(),
+                    path.display(),
                     e
                 );
                 return;
@@ -517,7 +545,7 @@ impl IntegrityGuard {
         let size = content.len() as u64;
         lock(&self.cache).insert(id, content);
 
-        let path = seen.path.clone();
+        let path = path.to_path_buf();
         let (op, alert) = match mode {
             ApprovalMode::Automatic => {
                 info!("IntegrityGuard: accepted clean edit of {}", path.display());
@@ -528,8 +556,9 @@ impl IntegrityGuard {
             }
             ApprovalMode::Approved => {
                 info!(
-                    "IntegrityGuard: clean edit of {} is pending approval",
-                    path.display()
+                    "IntegrityGuard: edit of {} is pending approval ({})",
+                    path.display(),
+                    detail
                 );
                 (
                     JournalOp::VersionPending,
@@ -540,10 +569,10 @@ impl IntegrityGuard {
         self.journal_write(journal_entry(
             op,
             id,
-            seen.namespace.as_str(),
+            namespace,
             Some(path),
             Some(size),
-            format!("approval={}", mode.as_str()),
+            detail,
         ));
         self.alert(alert);
     }
@@ -595,12 +624,14 @@ impl IntegrityGuard {
 
     /// Strip the invisible characters a write added to a tracked file.
     /// Returns `false` if there was nothing to strip because the file is
-    /// missing or not text, so the caller should recreate it instead.
+    /// missing, not a regular file, or not text, so the caller should
+    /// recreate it instead.
     fn sanitize(&mut self, v: &Violation, path: &Path, baseline: ContentId) -> bool {
-        let Ok(live) = std::fs::read(path) else {
+        let Ok(Live::File { content, .. }) = read_live(path) else {
             return false;
         };
-        let Ok(live) = String::from_utf8(live) else {
+        let observed = hash_bytes(&content);
+        let Ok(live) = String::from_utf8(content) else {
             return false;
         };
         let base = match self.verified_copy(&baseline, true) {
@@ -630,7 +661,7 @@ impl IntegrityGuard {
             return true;
         }
         let cleaned = invisible::strip_introduced(&base, &live);
-        match rewrite_file(path, cleaned.as_bytes()) {
+        match rewrite_file(path, cleaned.as_bytes(), Some(observed)) {
             Ok(()) => {
                 warn!(
                     "IntegrityGuard: stripped invisible characters from {} ({})",
@@ -647,6 +678,15 @@ impl IntegrityGuard {
                     path: path.to_path_buf(),
                     removed: found.len(),
                 });
+            }
+            Err(e @ UltnasCoreError::ChangedDuringWrite(_)) => {
+                info!("IntegrityGuard: {} — rechecking on the next scan", e);
+                self.journal_write(entry(
+                    JournalOp::IntegrityRestoreFailed,
+                    v,
+                    None,
+                    format!("action=sanitize {e}"),
+                ));
             }
             Err(e) => {
                 error!(
@@ -708,7 +748,7 @@ impl IntegrityGuard {
             Some((data, source)) => {
                 let written = match &v.target {
                     Target::Object => self.vault.restore_object(&v.id, &data),
-                    Target::Tracked { .. } => recreate_file(&path, &data),
+                    Target::Tracked { observed, .. } => recreate_file(&path, &data, *observed),
                 };
                 written.map(|()| (data.len() as u64, source))
             }
@@ -739,6 +779,20 @@ impl IntegrityGuard {
                     format!("source={}", source.as_str()),
                 ));
                 self.alert(IntegrityAlert::RestoreSucceeded { path, source });
+            }
+            Err(e @ UltnasCoreError::ChangedDuringWrite(_)) => {
+                // Someone wrote again first; that write gets inspected next
+                // scan. An abandoned restore doesn't count toward escalation.
+                info!("IntegrityGuard: {} — rechecking on the next scan", e);
+                if let Some(t) = self.trackers.get_mut(&path) {
+                    t.restores = t.restores.saturating_sub(1);
+                }
+                self.journal_write(entry(
+                    JournalOp::IntegrityRestoreFailed,
+                    v,
+                    None,
+                    e.to_string(),
+                ));
             }
             Err(e) => {
                 error!(

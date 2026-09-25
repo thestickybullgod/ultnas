@@ -42,6 +42,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - `atomic_write` fsyncs the file (and parent directory on Unix) before/after rename
 - `ultnas integrity status` / `lift-quarantine` use the same quarantine fold as the daemon; lift validates the namespace
 
+### Security
+- Tracked files are opened without following symbolic links, and without blocking on FIFOs; a link or other non-regular file at a tracked path is a violation, replaced by a regular file without touching the link's target or copying its permissions
+- `atomic_write` never opens an existing temp file, so a link planted at the predictable temp name can't redirect a write
+- Replacing a live file checks it is unchanged just before the rename, so an edit made while the daemon was inspecting it isn't overwritten
+
 ### Fixed
 - Restore could rewrite a tampered object onto itself and report success (removed the object-store "L2" tier)
 - Cache warm-up admitted unverified bytes as restore sources
