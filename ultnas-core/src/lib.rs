@@ -46,7 +46,7 @@ pub use error::UltnasCoreError;
 
 // journal
 pub use journal::{
-    apply_quarantine_entry, Journal, JournalEntry, JournalOp, JournalTail, QuarantineChange,
+    Journal, JournalEntry, JournalOp, JournalTail, QuarantineChange, QuarantineFold,
 };
 
 // namespace

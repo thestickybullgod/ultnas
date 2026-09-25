@@ -74,8 +74,8 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use ultnas_core::{
-    apply_quarantine_entry, hash_bytes, invisible, read_live, recreate_file, rewrite_file,
-    ApprovalMode, ContentId, Journal, JournalEntry, JournalOp, Live, QuarantineChange, TrackedDir,
+    hash_bytes, invisible, read_live, recreate_file, rewrite_file, ApprovalMode, ContentId,
+    Journal, JournalEntry, JournalOp, Live, QuarantineChange, QuarantineFold, TrackedDir,
     TrackedFile, UltnasCoreError, Vault, MAX_ADOPT_BYTES,
 };
 
@@ -226,7 +226,7 @@ struct ViolationTracker {
 /// so they stay in force until the entry lands or an operator lifts them.
 #[derive(Default)]
 pub struct QuarantineRegistry {
-    journaled: BTreeSet<String>,
+    journaled: QuarantineFold,
     unjournaled: BTreeMap<String, DateTime<Utc>>,
     offset: u64,
 }
@@ -238,6 +238,7 @@ impl QuarantineRegistry {
 
     pub fn all_quarantined(&self) -> Vec<String> {
         self.journaled
+            .namespaces()
             .iter()
             .chain(self.unjournaled.keys())
             .cloned()
@@ -259,7 +260,7 @@ impl QuarantineRegistry {
                 warn!(
                     "QuarantineRegistry: journal is shorter than last read — rebuilding from start"
                 );
-                self.journaled.clear();
+                self.journaled = QuarantineFold::default();
                 self.offset = 0;
                 match journal.read_from(0) {
                     Ok(Some(tail)) => tail,
@@ -285,7 +286,7 @@ impl QuarantineRegistry {
 
         let mut lifted = vec![];
         for entry in &tail.entries {
-            match apply_quarantine_entry(&mut self.journaled, entry) {
+            match self.journaled.apply(entry) {
                 Some(QuarantineChange::Escalated(ns)) => {
                     // A buffered escalation finally reached the journal.
                     self.unjournaled.remove(&ns);
@@ -304,8 +305,8 @@ impl QuarantineRegistry {
         lifted
     }
 
-    fn quarantine_journaled(&mut self, namespace: &str) {
-        self.journaled.insert(namespace.to_string());
+    fn quarantine_journaled(&mut self, escalation: &JournalEntry) {
+        self.journaled.apply(escalation);
     }
 
     fn quarantine_unjournaled(&mut self, namespace: &str, at: DateTime<Utc>) {
@@ -1004,8 +1005,8 @@ impl IntegrityGuard {
             format!("threshold={}", self.escalate_after_restores),
         );
         escalation.ts = at;
-        if self.journal_write(escalation) {
-            self.quarantine.quarantine_journaled(&v.namespace);
+        if self.journal_write(escalation.clone()) {
+            self.quarantine.quarantine_journaled(&escalation);
         } else {
             // Fail closed: quarantine anyway, and remember it wasn't journaled.
             self.quarantine.quarantine_unjournaled(&v.namespace, at);
@@ -1204,6 +1205,39 @@ mod tests {
             1
         );
         assert_eq!(f.guard.quarantined(), vec!["docs".to_string()]);
+    }
+
+    #[test]
+    fn buffered_escalation_written_after_a_lift_does_not_requarantine() {
+        let mut f = fixture(false);
+        let lift_ts = Utc::now();
+        let entry_at = |op, ts| JournalEntry {
+            ts,
+            op,
+            id: None,
+            ns: Some("docs".into()),
+            label: None,
+            size: None,
+            detail: None,
+            path: None,
+        };
+        // What the operator wrote while the daemon's journal was failing, then
+        // the daemon's buffered escalation (older timestamp) landing after it.
+        let cli = Journal::open(&f.vault.root().join("journal.log")).unwrap();
+        cli.write(entry_at(JournalOp::QuarantineLift, lift_ts))
+            .unwrap();
+        cli.write(entry_at(
+            JournalOp::IntegrityEscalate,
+            lift_ts - chrono::Duration::seconds(30),
+        ))
+        .unwrap();
+
+        f.guard.sync_quarantine();
+        assert!(f.guard.quarantined().is_empty(), "lift must stand");
+        assert!(
+            f.journal.quarantined_namespaces().unwrap().is_empty(),
+            "CLI agrees"
+        );
     }
 
     #[test]

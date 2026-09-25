@@ -14,7 +14,7 @@ use crate::{ContentId, UltnasCoreError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -120,26 +120,52 @@ pub enum QuarantineChange {
     Lifted(String),
 }
 
-/// Apply one entry to a set of quarantined namespaces.
+/// Quarantine state folded from journal entries.
 ///
 /// This is the single definition of quarantine state: the daemon and the CLI
-/// both fold the journal through it, so they can never disagree. The last
-/// `IntegrityEscalate` / `QuarantineLift` for a namespace wins.
-pub fn apply_quarantine_entry(
-    quarantined: &mut BTreeSet<String>,
-    entry: &JournalEntry,
-) -> Option<QuarantineChange> {
-    let ns = entry.ns.as_ref()?;
-    match entry.op {
-        JournalOp::IntegrityEscalate => {
-            quarantined.insert(ns.clone());
-            Some(QuarantineChange::Escalated(ns.clone()))
+/// both fold the journal through it, so they can never disagree.
+///
+/// Entries apply in journal order, except that an `IntegrityEscalate` older
+/// than a lift already applied for its namespace is stale and ignored. The
+/// daemon buffers escalations while the journal is unwritable and writes
+/// them, with their original timestamps, once it recovers; an operator may
+/// have lifted that quarantine in between, and appending the old escalation
+/// after the lift must not undo it. (Timestamps come from one machine's
+/// clock: the daemon and CLI share a vault.)
+#[derive(Debug, Clone, Default)]
+pub struct QuarantineFold {
+    quarantined: BTreeSet<String>,
+    lifted_at: BTreeMap<String, DateTime<Utc>>,
+}
+
+impl QuarantineFold {
+    /// Apply one entry; returns the change it made, if any.
+    pub fn apply(&mut self, entry: &JournalEntry) -> Option<QuarantineChange> {
+        let ns = entry.ns.as_ref()?;
+        match entry.op {
+            JournalOp::IntegrityEscalate => {
+                if self.lifted_at.get(ns).is_some_and(|lift| entry.ts < *lift) {
+                    return None;
+                }
+                self.quarantined.insert(ns.clone());
+                Some(QuarantineChange::Escalated(ns.clone()))
+            }
+            JournalOp::QuarantineLift => {
+                self.quarantined.remove(ns);
+                let last = self.lifted_at.entry(ns.clone()).or_insert(entry.ts);
+                *last = (*last).max(entry.ts);
+                Some(QuarantineChange::Lifted(ns.clone()))
+            }
+            _ => None,
         }
-        JournalOp::QuarantineLift => {
-            quarantined.remove(ns);
-            Some(QuarantineChange::Lifted(ns.clone()))
-        }
-        _ => None,
+    }
+
+    pub fn contains(&self, namespace: &str) -> bool {
+        self.quarantined.contains(namespace)
+    }
+
+    pub fn namespaces(&self) -> &BTreeSet<String> {
+        &self.quarantined
     }
 }
 
@@ -238,11 +264,11 @@ impl Journal {
 
     /// Currently quarantined namespaces, folded from the whole journal.
     pub fn quarantined_namespaces(&self) -> Result<BTreeSet<String>, UltnasCoreError> {
-        let mut quarantined = BTreeSet::new();
+        let mut fold = QuarantineFold::default();
         for entry in self.iter()?.flatten() {
-            apply_quarantine_entry(&mut quarantined, &entry);
+            fold.apply(&entry);
         }
-        Ok(quarantined)
+        Ok(fold.quarantined)
     }
 
     /// Count entries matching a specific operation type.
@@ -383,6 +409,37 @@ mod tests {
 
         let q = journal.quarantined_namespaces().unwrap();
         assert_eq!(q.into_iter().collect::<Vec<_>>(), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn escalation_older_than_a_lift_does_not_undo_it() {
+        let tmp = NamedTempFile::new().unwrap();
+        let journal = Journal::open(tmp.path()).unwrap();
+        let t0 = Utc::now() - chrono::Duration::seconds(60);
+        let at = |secs| {
+            let mut e = ns_entry(JournalOp::IntegrityEscalate, "a");
+            e.ts = t0 + chrono::Duration::seconds(secs);
+            e
+        };
+        let mut lift = ns_entry(JournalOp::QuarantineLift, "a");
+        lift.ts = t0 + chrono::Duration::seconds(10);
+
+        // The operator lifts; then a buffered escalation from *before* the
+        // lift finally reaches the journal.
+        journal.write(lift).unwrap();
+        journal.write(at(5)).unwrap();
+        assert!(journal.quarantined_namespaces().unwrap().is_empty());
+
+        // An escalation after the lift is genuine.
+        journal.write(at(20)).unwrap();
+        assert_eq!(
+            journal
+                .quarantined_namespaces()
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["a".to_string()]
+        );
     }
 
     #[test]
