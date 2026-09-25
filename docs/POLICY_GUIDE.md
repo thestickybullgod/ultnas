@@ -88,6 +88,26 @@ A write that arrives with invisible characters is never trusted as an edit.
 If stripping them leaves visible changes too, the result is held as pending
 whatever the `approval` setting, and needs `ultnas approve <file>`.
 
+### Getting started: `ultnas setup`
+
+`ultnas setup` offers the places on this machine where an invisible-character
+edit does the most damage, with the recommended ones pre-checked:
+
+| Suggested | Mode | Namespace |
+|---|---|---|
+| `~/.bashrc`, `~/.bash_profile`, `~/.profile`, `~/.zshrc`, `~/.zprofile`, `~/.zshenv` | file | `shell` |
+| `~/.ssh/config`, `~/.ssh/authorized_keys` | file | `ssh` |
+| `~/.gitconfig`, `~/.config/git/config` | file | `git` |
+| `~/bin`, `~/.local/bin` | recursive | `scripts` |
+| `~/src`, `~/dev`, `~/code`, `~/projects`, `~/repos`, `~/workspace`, `~/git` | recursive, excluding `target`, `node_modules`, `venv`, `build`, `dist`, `__pycache__`, `vendor` | `code` |
+| `~/.config` (not pre-checked: large, churning app state) | recursive, excluding caches and logs | `config` |
+| `/etc` (root only) | recursive | `etc` |
+
+Only what exists is shown, and already-tracked items are marked. Each group
+gets its own namespace, so a quarantine in one doesn't pause the others.
+`--list` just prints the suggestions; `--yes` tracks the pre-checked ones
+without asking.
+
 ### Tracked directories
 
 `ultnas track --recursive <dir>` tracks every UTF-8 text file under a

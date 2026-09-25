@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 mod commands;
-use commands::{add, daemon, init, inspect, integrity, ls, policy, purge, track, verify};
+use commands::{add, daemon, init, inspect, integrity, ls, policy, purge, setup, track, verify};
 
 #[derive(Parser)]
 #[command(
@@ -42,6 +42,8 @@ enum Commands {
     Ls(ls::LsArgs),
     /// Remove records per policy or explicit ID
     Purge(purge::PurgeArgs),
+    /// Choose recommended files and directories to protect
+    Setup(setup::SetupArgs),
     /// Protect a live text file (or, with --recursive, a directory) against invisible-character writes
     Track(track::TrackArgs),
     /// Stop protecting a file or directory (versions stay in the vault)
@@ -76,6 +78,7 @@ fn main() -> Result<()> {
         Commands::Verify(args) => verify::run(&cli.vault, args),
         Commands::Ls(args) => ls::run(&cli.vault, args),
         Commands::Purge(args) => purge::run(&cli.vault, args),
+        Commands::Setup(args) => setup::run(&cli.vault, args),
         Commands::Track(args) => track::track(&cli.vault, args),
         Commands::Untrack(args) => track::untrack(&cli.vault, args),
         Commands::Approve(args) => track::approve(&cli.vault, args),

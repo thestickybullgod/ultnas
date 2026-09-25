@@ -64,6 +64,7 @@ Ultnas is a three-tier system: a **core library**, a **CLI**, and a **background
 | `export` | Export records to an external format |
 | `purge` | Remove records per policy or explicit ID |
 | `policy validate` | Validate a policy TOML file |
+| `setup` | Choose recommended files and directories to protect (shell startup, SSH, Git, scripts, source, `/etc` as root) |
 | `track` / `untrack` | Protect a live text file (or, with `--recursive`, a directory) in place, or stop |
 | `approve` | Promote a tracked file's pending edit to its stable version |
 | `tracked` | List tracked files and their status |

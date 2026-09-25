@@ -7,5 +7,6 @@ pub mod ls;
 pub mod policy;
 pub mod prompt;
 pub mod purge;
+pub mod setup;
 pub mod track;
 pub mod verify;
