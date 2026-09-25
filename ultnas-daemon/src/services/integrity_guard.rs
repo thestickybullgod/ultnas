@@ -545,6 +545,7 @@ fn entry(op: JournalOp, v: &Violation, size: Option<u64>, detail: String) -> Jou
         label: None,
         size,
         detail: Some(detail),
+        path: None,
     }
 }
 
@@ -674,6 +675,7 @@ mod tests {
             label: None,
             size: None,
             detail: None,
+            path: None,
         })
         .unwrap();
 

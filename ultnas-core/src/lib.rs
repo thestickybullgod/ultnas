@@ -3,7 +3,8 @@
 //! Core library for the Ultnas sovereign archiving system.
 //!
 //! Provides content addressing, namespace management, record sealing,
-//! policy evaluation, vault I/O, and the unified error type.
+//! policy evaluation, vault I/O, invisible-character detection, tracked-file
+//! state, and the unified error type.
 //!
 //! ## Example
 //!
@@ -31,6 +32,7 @@ pub mod journal;
 pub mod namespace;
 pub mod policy;
 pub mod record;
+pub mod tracking;
 pub mod vault;
 
 // ── Convenience re-exports at crate root ─────────────────────────────────────
@@ -51,12 +53,15 @@ pub use namespace::{NamespacePath, NamespaceTree};
 
 // policy
 pub use policy::{
-    ConflictStrategy, GlobalPolicy, IntegrityPolicy, NamespacePolicy, Policy, PolicyEvaluator,
-    RetentionPolicy,
+    ApprovalMode, ConflictStrategy, GlobalPolicy, IntegrityPolicy, NamespacePolicy, Policy,
+    PolicyEvaluator, RetentionPolicy,
 };
 
 // record
 pub use record::{Record, RecordBuilder, RecordSeal};
 
 // vault
-pub use vault::{Vault, VaultManifest};
+pub use vault::{recreate_file, rewrite_file, Vault, VaultManifest};
+
+// tracking
+pub use tracking::{canonical_path, TrackedFile};

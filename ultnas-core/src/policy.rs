@@ -13,6 +13,17 @@ pub struct Policy {
     pub namespaces: Vec<NamespacePolicy>,
 }
 
+/// The policy used when none is configured: every default, no namespaces.
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            global: GlobalPolicy::default(),
+            namespaces: vec![],
+        }
+    }
+}
+
 /// Global defaults applied to all namespaces unless overridden.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalPolicy {
@@ -54,13 +65,16 @@ fn default_conflict() -> ConflictStrategy {
 /// debounce_ms                  = 100
 /// restore_source               = "memory_then_store"
 /// escalate_after_restores      = 3
+/// approval                     = "automatic"   # or "approved"
 /// log_each_violation           = true
 /// cache_budget_bytes           = 268435456   # 256 MiB
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntegrityPolicy {
-    /// Number of write violations against one ContentId within `violation_window_secs`
-    /// before a delete-and-restore is triggered. Default: 5.
+    /// Number of write violations against one file within `violation_window_secs`
+    /// before a delete-and-restore is triggered. For tracked files, each
+    /// violation below this count is prevented by stripping the invisible
+    /// characters it introduced. Default: 5.
     #[serde(default = "default_threshold")]
     pub write_violation_threshold: u32,
 
@@ -77,10 +91,14 @@ pub struct IntegrityPolicy {
     /// Restore source priority. Default: `"memory_then_store"`.
     ///
     /// Valid values:
-    /// - `"memory"`           — L1 (VerifiedCache) only
-    /// - `"store"`            — L2 (object store) only
-    /// - `"memory_then_store"`— L1 then L2 (default)
-    /// - `"remote"`           — L3 only (planned v0.3)
+    /// - `"memory"`           — the in-memory VerifiedCache only
+    /// - `"store"`            — the vault's copy only
+    /// - `"memory_then_store"`— memory, then the vault (default)
+    /// - `"remote"`           — reserved; treated as `"memory_then_store"`
+    ///
+    /// The vault's copy is only independent of a *tracked* file. A sealed
+    /// object in the vault is itself the file being restored, so those are
+    /// restored from memory whatever this says.
     #[serde(default = "default_restore_source")]
     pub restore_source: String,
 
@@ -97,6 +115,32 @@ pub struct IntegrityPolicy {
     /// Maximum bytes the VerifiedCache may hold in memory. Default: 256 MiB.
     #[serde(default = "default_cache_budget")]
     pub cache_budget_bytes: u64,
+
+    /// What happens to a clean edit (no invisible characters) of a tracked
+    /// file. Overridable per namespace. Default: `"automatic"`.
+    #[serde(default)]
+    pub approval: ApprovalMode,
+}
+
+/// How clean edits to tracked files become the stable (restore) version.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    /// The edit becomes the stable version as soon as it is seen.
+    #[default]
+    Automatic,
+    /// The edit stays on disk as a *pending* version. Restores still use the
+    /// last approved version until `ultnas approve <file>` promotes it.
+    Approved,
+}
+
+impl ApprovalMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApprovalMode::Automatic => "automatic",
+            ApprovalMode::Approved => "approved",
+        }
+    }
 }
 
 impl Default for IntegrityPolicy {
@@ -109,6 +153,7 @@ impl Default for IntegrityPolicy {
             escalate_after_restores: default_escalate(),
             log_each_violation: true,
             cache_budget_bytes: default_cache_budget(),
+            approval: ApprovalMode::default(),
         }
     }
 }
@@ -142,6 +187,8 @@ pub struct NamespacePolicy {
     #[serde(default)]
     pub tags_required: Vec<String>,
     pub retention: Option<RetentionPolicy>,
+    /// Overrides `[global.integrity] approval` for this namespace and below.
+    pub approval: Option<ApprovalMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +233,21 @@ impl Policy {
             )));
         }
         Ok(())
+    }
+
+    /// Approval mode for tracked files in `namespace`: the most specific
+    /// namespace entry that sets one, else the global setting.
+    pub fn approval_for(&self, namespace: &NamespacePath) -> ApprovalMode {
+        let ns = namespace.as_str();
+        self.namespaces
+            .iter()
+            .filter(|np| np.approval.is_some())
+            .filter(|np| {
+                np.path.is_empty() || ns == np.path || ns.starts_with(&format!("{}/", np.path))
+            })
+            .max_by_key(|np| np.path.len())
+            .and_then(|np| np.approval)
+            .unwrap_or(self.global.integrity.approval)
     }
 
     /// BLAKE3 hash of the canonical TOML serialization.
@@ -302,6 +364,47 @@ mod tests {
     #[test]
     fn invalid_restore_source_rejected() {
         let bad = "version = 1\n[global.integrity]\nrestore_source = \"banana\"\n";
+        assert!(Policy::from_toml(bad).is_err());
+    }
+
+    #[test]
+    fn approval_defaults_to_automatic_and_resolves_per_namespace() {
+        let ns = |s| NamespacePath::parse(s).unwrap();
+        assert_eq!(
+            Policy::from_toml(MINIMAL).unwrap().approval_for(&ns("a")),
+            ApprovalMode::Automatic
+        );
+
+        let p = Policy::from_toml(
+            r#"
+            version = 1
+            [global.integrity]
+            approval = "approved"
+            [[namespaces]]
+            path = "notes"
+            approval = "automatic"
+            [[namespaces]]
+            path = "notes/legal"
+            approval = "approved"
+            [[namespaces]]
+            path = "notes/other"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(p.approval_for(&ns("code")), ApprovalMode::Approved);
+        assert_eq!(p.approval_for(&ns("notes")), ApprovalMode::Automatic);
+        assert_eq!(p.approval_for(&ns("notes/other")), ApprovalMode::Automatic);
+        assert_eq!(
+            p.approval_for(&ns("notes/legal/nda")),
+            ApprovalMode::Approved
+        );
+        // Segment-aware: "notesX" is not under "notes".
+        assert_eq!(p.approval_for(&ns("notesX")), ApprovalMode::Approved);
+    }
+
+    #[test]
+    fn invalid_approval_rejected() {
+        let bad = "version = 1\n[global.integrity]\napproval = \"sometimes\"\n";
         assert!(Policy::from_toml(bad).is_err());
     }
 

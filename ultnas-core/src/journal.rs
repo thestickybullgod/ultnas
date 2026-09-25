@@ -31,6 +31,9 @@ pub struct JournalEntry {
     pub label: Option<String>,
     pub size: Option<u64>,
     pub detail: Option<String>,
+    /// Live file path, for entries about tracked files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
 }
 
 /// All operation types that can appear in the journal.
@@ -61,6 +64,20 @@ pub enum JournalOp {
     IntegrityEscalate,
     /// Quarantine manually lifted by an operator via the CLI.
     QuarantineLift,
+
+    // Tracked files
+    /// A live file was put under protection (`ultnas track`).
+    TrackFile,
+    /// A live file was removed from protection (`ultnas untrack`).
+    UntrackFile,
+    /// A clean edit became the stable version (approval mode `automatic`).
+    VersionAccepted,
+    /// A clean edit was stored as pending (approval mode `approved`).
+    VersionPending,
+    /// An operator promoted the pending version (`ultnas approve`).
+    VersionApproved,
+    /// Invisible characters a write introduced were stripped in place.
+    IntegritySanitize,
 }
 
 impl JournalOp {
@@ -75,6 +92,11 @@ impl JournalOp {
                 | JournalOp::IntegrityRestoreFailed
                 | JournalOp::IntegrityEscalate
                 | JournalOp::QuarantineLift
+                | JournalOp::TrackFile
+                | JournalOp::UntrackFile
+                | JournalOp::VersionAccepted
+                | JournalOp::VersionApproved
+                | JournalOp::IntegritySanitize
         )
     }
 }
@@ -250,6 +272,7 @@ mod tests {
             label: None,
             size: None,
             detail: None,
+            path: None,
         }
     }
 
@@ -267,6 +290,7 @@ mod tests {
                 label: Some("test-label".into()),
                 size: Some(42),
                 detail: None,
+                path: None,
             })
             .unwrap();
 
@@ -279,6 +303,7 @@ mod tests {
                 label: None,
                 size: None,
                 detail: Some("violation count: 1".into()),
+                path: None,
             })
             .unwrap();
 
@@ -302,6 +327,7 @@ mod tests {
                     label: None,
                     size: None,
                     detail: None,
+                    path: None,
                 })
                 .unwrap();
         }
@@ -322,6 +348,7 @@ mod tests {
                     label: None,
                     size: None,
                     detail: None,
+                    path: None,
                 })
                 .unwrap();
         }

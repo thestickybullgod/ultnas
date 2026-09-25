@@ -199,6 +199,7 @@ fn cmd_lift_quarantine(vault_root: &Path, namespace: &str, yes: bool) -> Result<
         label: Some("operator".into()),
         size: None,
         detail: Some("quarantine lifted via CLI".into()),
+        path: None,
     })?;
 
     println!("✓ Quarantine lift recorded for namespace `{}`.", namespace);

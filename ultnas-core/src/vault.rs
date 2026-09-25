@@ -191,7 +191,18 @@ impl Vault {
 /// Write `data` to `path` atomically: temp file → fsync → rename → fsync dir.
 ///
 /// The temp name includes the PID so the CLI and daemon never share one.
-fn atomic_write(path: &Path, data: &[u8]) -> Result<(), UltnasCoreError> {
+pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), UltnasCoreError> {
+    atomic_write_as(path, data, None)
+}
+
+/// [`atomic_write`], giving the new file `like`'s permissions (and, on Unix,
+/// owner) before it is renamed into place, so there is no window where it
+/// has the daemon's defaults.
+fn atomic_write_as(
+    path: &Path,
+    data: &[u8],
+    like: Option<&fs::Metadata>,
+) -> Result<(), UltnasCoreError> {
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -202,8 +213,38 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), UltnasCoreError> {
         file.write_all(data)?;
         file.sync_all()?;
     }
+    if let Some(meta) = like {
+        fs::set_permissions(&tmp, meta.permissions())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // Best effort: only root may give a file away. As the owner, a
+            // same-owner chown succeeds and anything else keeps our identity.
+            let _ = std::os::unix::fs::chown(&tmp, Some(meta.uid()), Some(meta.gid()));
+        }
+    }
     fs::rename(&tmp, path)?;
     sync_parent_dir(path)
+}
+
+/// Replace a live file's contents atomically, keeping its permissions.
+/// Used to strip invisible characters from a tracked file.
+pub fn rewrite_file(path: &Path, data: &[u8]) -> Result<(), UltnasCoreError> {
+    let meta = fs::metadata(path).ok();
+    atomic_write_as(path, data, meta.as_ref())
+}
+
+/// Delete a live file, then create it afresh from `data`, keeping its
+/// permissions. The new file is a new inode, so a writer still holding the
+/// old one open keeps writing into the deleted copy, not the restored one.
+pub fn recreate_file(path: &Path, data: &[u8]) -> Result<(), UltnasCoreError> {
+    let meta = fs::metadata(path).ok();
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    atomic_write_as(path, data, meta.as_ref())
 }
 
 /// Persist the rename itself. Windows has no directory fsync; NTFS journals
@@ -272,5 +313,35 @@ mod tests {
         vault.restore_object(&record.id, content).unwrap();
         vault.verify(&record.id).unwrap();
         assert_eq!(vault.all_records().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rewrite_and_recreate_replace_contents() {
+        let dir = TempDir::new().unwrap();
+        let live = dir.path().join("live.txt");
+        fs::write(&live, b"old").unwrap();
+        rewrite_file(&live, b"new").unwrap();
+        assert_eq!(fs::read(&live).unwrap(), b"new");
+        recreate_file(&live, b"fresh").unwrap();
+        assert_eq!(fs::read(&live).unwrap(), b"fresh");
+        fs::remove_file(&live).unwrap();
+        recreate_file(&live, b"back").unwrap();
+        assert_eq!(fs::read(&live).unwrap(), b"back");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rewrite_and_recreate_keep_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let live = dir.path().join("live.txt");
+        fs::write(&live, b"old").unwrap();
+        fs::set_permissions(&live, fs::Permissions::from_mode(0o640)).unwrap();
+        let mode = || fs::metadata(&live).unwrap().permissions().mode() & 0o777;
+
+        rewrite_file(&live, b"new").unwrap();
+        assert_eq!(mode(), 0o640);
+        recreate_file(&live, b"fresh").unwrap();
+        assert_eq!(mode(), 0o640);
     }
 }
