@@ -59,6 +59,11 @@ apt-ftparchive \
     -o "APT::FTPArchive::Release::Description=Ultnas: protects text files from invisible-character tampering" \
     release "dists/$suite" > "dists/$suite/Release"
 
+# A pasted secret may end in CR/LF; gpg reads up to LF, so drop a CR too.
+# (Spaces are kept: a passphrase may really contain them.)
+GPG_PASSPHRASE=${GPG_PASSPHRASE:-}
+GPG_PASSPHRASE=${GPG_PASSPHRASE%$'\n'}
+GPG_PASSPHRASE=${GPG_PASSPHRASE%$'\r'}
 sign=(gpg --batch --yes --local-user "$fpr" --digest-algo SHA512)
 if [ -n "${GPG_PASSPHRASE:-}" ]; then
     sign+=(--pinentry-mode loopback --passphrase-fd 0)
