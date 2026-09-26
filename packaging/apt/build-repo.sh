@@ -87,4 +87,4 @@ sudo apt install ultnas</pre>
 <p>Signing key fingerprint: <code>$fp_spaced</code></p>
 EOF
 
-echo "Built $out: $(ls "$pool" | wc -l) package(s), signed by $fpr"
+echo "Built $out: $(ls "pool/$component/u/ultnas" | wc -l) package(s), signed by $fpr"
