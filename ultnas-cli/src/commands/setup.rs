@@ -280,10 +280,17 @@ pub fn run(vault_root: &Path, args: SetupArgs) -> Result<()> {
         }
         loop {
             show(&items, &chosen, home.as_deref());
-            print!(
-                "\nEnter to track the checked items; numbers to toggle (e.g. 3 7), \
-                 a = all, n = none, q = quit: "
-            );
+            if chosen.is_empty() {
+                print!(
+                    "\nNothing is checked. Enter to finish; numbers to check (e.g. 3 7), \
+                     a = all, q = quit: "
+                );
+            } else {
+                print!(
+                    "\nEnter to track the checked items; numbers to toggle (e.g. 3 7), \
+                     a = all, n = none, q = quit: "
+                );
+            }
             io::stdout().flush()?;
             let line = io::stdin()
                 .lock()
@@ -296,7 +303,16 @@ pub fn run(vault_root: &Path, args: SetupArgs) -> Result<()> {
             }
             match apply_input(&line, &items, &mut chosen) {
                 Ok(true) => break,
-                Ok(false) => println!(),
+                // Say what changed: the list reprints in full, which is easy
+                // to mistake for nothing having happened.
+                Ok(false) => {
+                    let hint = if chosen.is_empty() {
+                        "Enter finishes without tracking anything"
+                    } else {
+                        "Enter tracks them"
+                    };
+                    println!("\n  → {} item(s) checked — {hint}\n", chosen.len());
+                }
                 Err(e) => println!("  {e}\n"),
             }
         }

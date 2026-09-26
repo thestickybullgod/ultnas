@@ -86,8 +86,10 @@ check() {
    printf 'hello\n'             > ~/ultnas-test/notes.txt
    ```
 
-2. Create the vault by running setup. **Uncheck everything** for now: type
-   `n` and press Enter, then press Enter again.
+2. Create the vault by running setup. **Uncheck everything** for now: at
+   the prompt, type `n` and press Enter. The list reprints with every box
+   empty, followed by "→ 0 item(s) checked". Then press Enter again on the
+   empty prompt to finish.
 
    ```bash
    ultnas setup
