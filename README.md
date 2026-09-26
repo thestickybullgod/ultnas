@@ -55,12 +55,22 @@ when you start tracking it are part of its baseline and never count against it.
 
 ## Quick Start
 
-On Debian or Ubuntu, install the `.deb` (from the **Debian package** workflow's
-artifacts, or a release), then:
+On Debian 12+ or Ubuntu 22.04+, add the Ultnas APT repository once, then
+install (later versions arrive with `sudo apt upgrade`):
 
 ```bash
-sudo apt install ./ultnas_0.1.0-1_amd64.deb
+curl -fsSL https://thestickybullgod.github.io/ultnas/ultnas.gpg | sudo tee /usr/share/keyrings/ultnas.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/ultnas.gpg] https://thestickybullgod.github.io/ultnas stable main" | sudo tee /etc/apt/sources.list.d/ultnas.list
+sudo apt update
+sudo apt install ultnas
+```
 
+The repository is signed with the key
+`0AB5 B2EA 07F2 0A83 504D  9ED0 3F9D D92C BF9B 17E8`. Or download the `.deb`
+from a [release](https://github.com/thestickybullgod/ultnas/releases) and
+`sudo apt install ./ultnas_*.deb`. Then:
+
+```bash
 ultnas setup                              # create your vault, choose what to protect
 systemctl --user enable --now ultnasd     # start protecting
 ultnas daemon status                      # check on it

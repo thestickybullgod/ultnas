@@ -9,6 +9,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+- Signed APT repository at https://thestickybullgod.github.io/ultnas (key `0AB5 B2EA 07F2 0A83 504D 9ED0 3F9D D92C BF9B 17E8`), rebuilt from every release's `.deb` and verified by installing from the live address. Each release now updates it
+
 ## [0.1.0] — 2026-09-25
 
 ### Added

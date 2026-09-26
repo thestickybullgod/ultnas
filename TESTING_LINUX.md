@@ -11,36 +11,39 @@ everywhere).
 
 ---
 
-## Part 0 — Get the package
+## Part 0 — Add the Ultnas APT repository
 
-1. On GitHub, open **Actions → Debian package**, click the newest green run,
-   and download the **ultnas-deb** artifact. It is a zip containing
-   `ultnas_0.1.0-1_amd64.deb`. Or, with the GitHub CLI:
+```bash
+curl -fsSL https://thestickybullgod.github.io/ultnas/ultnas.gpg | sudo tee /usr/share/keyrings/ultnas.gpg >/dev/null
+gpg --show-keys /usr/share/keyrings/ultnas.gpg
+```
 
-   ```bash
-   gh run download -R thestickybullgod/ultnas -n ultnas-deb
-   ```
+**Expect:** the key "Ultnas APT repository", with fingerprint
+`0AB5 B2EA 07F2 0A83 504D  9ED0 3F9D D92C BF9B 17E8`. If it differs, stop:
+you aren't talking to the real repository.
 
-2. Unzip it if your browser didn't:
+```bash
+echo "deb [signed-by=/usr/share/keyrings/ultnas.gpg] https://thestickybullgod.github.io/ultnas stable main" | sudo tee /etc/apt/sources.list.d/ultnas.list
+sudo apt update
+```
 
-   ```bash
-   unzip ultnas-deb.zip
-   ```
+**Expect:** a line fetching `https://thestickybullgod.github.io/ultnas stable
+InRelease`, and no warnings about signatures.
+
+(To test a specific build instead, download a `.deb` from a
+[release](https://github.com/thestickybullgod/ultnas/releases) or an
+**Actions → Debian package** run, copy it to `/tmp`, and
+`sudo apt install /tmp/ultnas_*.deb`.)
 
 ## Part 1 — Install
 
 ```bash
-sudo apt install ./ultnas_0.1.0-1_amd64.deb
+sudo apt install ultnas
 ```
 
 **Expect:** the install finishes and prints "Ultnas is installed. To start
 protecting your files:" followed by the setup commands. No service starts on
 its own.
-
-If apt also prints "N: Download is performed unsandboxed as root … couldn't be
-accessed by user '_apt'", that's harmless: apt couldn't read your home folder
-as its restricted user, so it read the file as root. To avoid it, install from
-`/tmp` instead (`cp` the file there first).
 
 Check the pieces are there:
 
@@ -484,6 +487,7 @@ tail -n 5 ~/.local/share/ultnas/journal.log
 systemctl --user disable --now ultnasd
 sudo systemctl disable --now ultnasd     # if you did Part 9
 sudo apt remove ultnas
+sudo rm /etc/apt/sources.list.d/ultnas.list /usr/share/keyrings/ultnas.gpg   # the repository too
 ```
 
 **Expect:** the commands are gone (`command -v ultnas` prints nothing). The

@@ -67,3 +67,13 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
+
+  apt:
+    name: APT repository
+    needs: create-release
+    uses: ./.github/workflows/apt.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
