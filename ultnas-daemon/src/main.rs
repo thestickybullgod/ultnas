@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use ultnas_core::{Journal, Policy, Rotation, Vault};
 
 mod logging;
@@ -246,10 +246,11 @@ async fn main() -> Result<()> {
     }
     let guard = Arc::new(Mutex::new(guard));
 
-    // Alert logger task
+    // Alert logger task. The guard already logs each event in words, so the
+    // structured form is only for debugging.
     tokio::spawn(async move {
         while let Some(alert) = alert_rx.recv().await {
-            info!("IntegrityAlert: {:?}", alert);
+            debug!("IntegrityAlert: {:?}", alert);
         }
     });
 

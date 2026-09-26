@@ -9,6 +9,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-09-25
+
 ### Added
 - Initial workspace structure with `ultnas-core`, `ultnas-cli`, and `ultnas-daemon` crates
 - BLAKE3 content addressing (`address` module)
@@ -68,6 +70,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Replacing a live file checks it is unchanged just before the rename, so an edit made while the daemon was inspecting it isn't overwritten
 
 ### Fixed
+- While a namespace was quarantined, every full scan re-reported the same unchanged file, adding a log line and journal entry every 5 minutes and bumping its count. An unchanged observation is now reported once
+- Every event was logged twice: once in words, and again as an `IntegrityAlert { … }` dump. The dump is now debug-level
 - A write made while the daemon was starting could go unrepaired until the next full scan (up to 5 minutes): watches were registered only after the first full scan. They are now registered first
 - A quarantine lift issued while the daemon's journal was failing could be undone: the buffered escalation was written after the lift and "last entry wins" re-quarantined the namespace. An escalation older than a lift already applied is now ignored, by the daemon and the CLI alike
 - A violation within `debounce_ms` of the previous one was ignored entirely instead of only sharing its count, so a rapid burst of writes went unrepaired

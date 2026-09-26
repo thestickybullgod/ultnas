@@ -221,6 +221,12 @@ struct ViolationTracker {
     restores: u32,
     last_seen: Option<Instant>,
     window_start: Instant,
+    /// What was last reported while the namespace was quarantined: the
+    /// observed content id (`None` for a missing or non-regular file, or a
+    /// sealed object). Quarantine leaves the file as it is, so every full
+    /// scan finds the same thing; it's reported once, and again only if it
+    /// changes. Lifting the quarantine drops the tracker.
+    reported_in_quarantine: Option<Option<ContentId>>,
 }
 
 // ─── QuarantineRegistry ──────────────────────────────────────────────────────
@@ -445,6 +451,7 @@ impl IntegrityGuard {
         let now = Instant::now();
         self.flush_pending_journal();
         let path = v.path(&self.vault);
+        let quarantined = self.quarantine.is_quarantined(&v.namespace);
 
         let tracker = self
             .trackers
@@ -455,7 +462,23 @@ impl IntegrityGuard {
                 restores: 0,
                 last_seen: None,
                 window_start: now,
+                reported_in_quarantine: None,
             });
+
+        if quarantined {
+            let observed = match &v.target {
+                Target::Tracked { observed, .. } => *observed,
+                Target::Object => None,
+            };
+            if tracker.reported_in_quarantine == Some(observed) {
+                debug!(
+                    "IntegrityGuard: {} unchanged since reported (quarantined)",
+                    path.display()
+                );
+                return;
+            }
+            tracker.reported_in_quarantine = Some(observed);
+        }
 
         // Debounce: events closer together than the debounce window count
         // once, but each is still repaired — a burst of writes must not slip
@@ -1261,6 +1284,43 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_file_is_reported_once_while_quarantined() {
+        let mut f = fixture(false);
+        tamper(&f);
+        // Restore fails (nothing cached), then the next attempt escalates.
+        for _ in 0..3 {
+            f.guard.record_violation(f.v.clone());
+        }
+        assert_eq!(f.guard.quarantined(), vec!["docs".to_string()]);
+        let before = f.journal.count_op(&JournalOp::WriteViolation).unwrap();
+
+        // Full scans keep finding the same tampered object: reported once.
+        for _ in 0..5 {
+            f.guard.record_violation(f.v.clone());
+        }
+        let after = f.journal.count_op(&JournalOp::WriteViolation).unwrap();
+        assert_eq!(after, before + 1);
+
+        // A tracked file that changes again while quarantined is new news.
+        let tracked = |observed: &[u8]| Violation {
+            id: f.v.id,
+            namespace: "docs".into(),
+            target: Target::Tracked {
+                path: f.vault.root().join("live.txt"),
+                baseline: f.v.id,
+                observed: Some(ultnas_core::hash_bytes(observed)),
+            },
+        };
+        f.guard.record_violation(tracked(b"first"));
+        f.guard.record_violation(tracked(b"first"));
+        f.guard.record_violation(tracked(b"second"));
+        assert_eq!(
+            f.journal.count_op(&JournalOp::WriteViolation).unwrap(),
+            after + 2
+        );
+    }
+
+    #[test]
     fn quarantine_survives_journal_rotation() {
         let dir = TempDir::new().unwrap();
         let vault = Arc::new(Vault::init(dir.path(), "t").unwrap());
@@ -1300,9 +1360,22 @@ mod tests {
         guard.record_violation(v.clone());
         assert_eq!(guard.quarantined(), vec!["docs".to_string()]);
 
-        // Enough further activity to rotate the journal, more than once.
-        for _ in 0..60 {
-            guard.record_violation(v.clone());
+        // Enough unrelated activity to rotate the journal, more than once.
+        // (Repeats of the same violation are reported only once while
+        // quarantined, so they wouldn't fill it.)
+        for i in 0..60 {
+            journal
+                .write(JournalEntry {
+                    ts: Utc::now(),
+                    op: JournalOp::WriteViolation,
+                    id: None,
+                    ns: Some(format!("other{i}")),
+                    label: None,
+                    size: None,
+                    detail: Some("filler".into()),
+                    path: None,
+                })
+                .unwrap();
         }
         assert!(
             !journal.archives().is_empty(),
