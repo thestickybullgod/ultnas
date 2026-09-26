@@ -1,0 +1,107 @@
+name: APT repository
+
+# Builds the signed APT repository from the .deb of every GitHub release,
+# checks that a clean Ubuntu can `apt install ultnas` from it, and (unless
+# it's a test run) publishes it on GitHub Pages.
+#
+# Test run (workflow_dispatch with test=true): signs with a throwaway key and
+# publishes nothing, so it works before the real key is configured.
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Test with a throwaway key and don't publish"
+        type: boolean
+        default: true
+  workflow_call:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: apt-repository
+  cancel-in-progress: false
+
+env:
+  # The real signing key; the public fingerprint is safe to show.
+  APT_KEY_FINGERPRINT: 0AB5B2EA07F20A83504D9ED03F9DD92CBF9B17E8
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-22.04
+    outputs:
+      test: ${{ steps.mode.outputs.test }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: mode
+        run: echo "test=${{ inputs.test == true }}" >> "$GITHUB_OUTPUT"
+
+      - name: Collect the .deb from every release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p debs
+          for tag in $(gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName -q '.[].tagName'); do
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" -p '*.deb' -D debs --skip-existing || true
+          done
+          ls -l debs
+          test -n "$(ls debs/*.deb)"
+
+      - name: Import the signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ "${{ steps.mode.outputs.test }}" = "true" ]; then
+            gpg --batch --passphrase '' --quick-generate-key "Ultnas APT test key <test@invalid>" ed25519 sign 1d
+            fpr=$(gpg --list-secret-keys --with-colons "Ultnas APT test key" | awk -F: '/^fpr/ {print $10; exit}')
+          else
+            if [ -z "$APT_GPG_PRIVATE_KEY" ]; then
+              echo "::error::APT_GPG_PRIVATE_KEY isn't set; add it (and APT_GPG_PASSPHRASE) as repository secrets"
+              exit 1
+            fi
+            printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+            fpr=$APT_KEY_FINGERPRINT
+            gpg --list-secret-keys "$fpr" >/dev/null
+          fi
+          echo "FPR=$fpr" >> "$GITHUB_ENV"
+
+      - name: Build the repository
+        env:
+          GPG_PASSPHRASE: ${{ steps.mode.outputs.test != 'true' && secrets.APT_GPG_PASSPHRASE || '' }}
+        run: bash packaging/apt/build-repo.sh debs site "$FPR"
+
+      - name: Install from it on a clean system
+        run: |
+          (cd site && python3 -m http.server 8765 >/dev/null 2>&1 &)
+          sleep 1
+          sudo cp site/ultnas.gpg /usr/share/keyrings/ultnas.gpg
+          echo "deb [signed-by=/usr/share/keyrings/ultnas.gpg] http://127.0.0.1:8765 stable main" \
+            | sudo tee /etc/apt/sources.list.d/ultnas.list
+          sudo apt-get update -o Dir::Etc::sourcelist=sources.list.d/ultnas.list \
+            -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
+          apt-cache policy ultnas
+          sudo apt-get install -y ultnas
+          ultnas --version
+          ultnasd --version
+          sudo apt-get remove -y ultnas
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.mode.outputs.test != 'true'
+        with:
+          path: site
+
+  deploy:
+    name: Publish on GitHub Pages
+    needs: build
+    if: needs.build.outputs.test != 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
