@@ -75,6 +75,14 @@ check() {
 }
 ```
 
+It lasts only for this terminal. If you open a new one and get
+"Command 'check' not found", paste it again, or save it for every new
+terminal with:
+
+```bash
+declare -f check >> ~/.bashrc
+```
+
 ## Part 3 — Set up and start
 
 1. Make a sandbox with a few files:
