@@ -79,6 +79,14 @@ jobs:
           ultnas daemon stop
           wait "$pid"
 
+          # Bulk tracking: 3000 files, about the size of /etc.
+          mkdir -p "$RUNNER_TEMP/bulk"
+          for i in $(seq 3000); do printf 'setting_%d = %d\n' "$i" "$i" > "$RUNNER_TEMP/bulk/f$i.conf"; done
+          start=$(date +%s.%N)
+          ultnas track -r --yes "$RUNNER_TEMP/bulk" | tail -n 2
+          echo "bulk track of 3000 files took $(echo "$(date +%s.%N) - $start" | bc) s"
+          test "$(ultnas tracked | grep -c '\.conf$')" -eq 3000
+
           sudo apt-get remove -y ultnas
           # (not `command -v`: bash caches the path it found earlier)
           test ! -e /usr/bin/ultnas && test ! -e /usr/bin/ultnasd

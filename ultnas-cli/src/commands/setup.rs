@@ -184,7 +184,8 @@ fn apply_input(
 ) -> Result<bool, String> {
     let line = line.trim();
     match line {
-        "" => return Ok(true),
+        // Enter, or a "yes" to the question of whether to go ahead.
+        "" | "y" | "yes" => return Ok(true),
         "a" | "all" => {
             chosen.extend((0..items.len()).filter(|&i| items[i].unavailable.is_none()));
             return Ok(false);
@@ -486,5 +487,6 @@ mod tests {
         assert_eq!(apply_input("all", &items, &mut chosen), Ok(false));
         assert!(!chosen.contains(&0), "unavailable items stay unselected");
         assert_eq!(apply_input("", &items, &mut chosen), Ok(true));
+        assert_eq!(apply_input("y", &items, &mut chosen), Ok(true));
     }
 }

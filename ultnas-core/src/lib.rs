@@ -66,7 +66,7 @@ pub use policy::{
 pub use record::{Record, RecordBuilder, RecordSeal};
 
 // vault
-pub use vault::{Vault, VaultManifest};
+pub use vault::{with_deferred_sync, Vault, VaultManifest};
 
 // live files
 pub use live::{read_live, recreate_file, rewrite_file, Live};

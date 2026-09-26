@@ -259,6 +259,40 @@ impl Vault {
     }
 }
 
+thread_local! {
+    static DEFER_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread is inside [`with_deferred_sync`].
+pub(crate) fn sync_deferred() -> bool {
+    DEFER_SYNC.with(|d| d.get())
+}
+
+/// Run a bulk operation (such as tracking thousands of files) without an
+/// fsync per write, then flush everything once at the end. On Unix the
+/// per-write fsyncs this skips (file, directory, journal: about seven per
+/// tracked file) dominate the time; the final `sync(2)` makes the whole
+/// batch durable. A crash mid-batch can lose the tail of the batch, never
+/// earlier state: renames still make each file appear whole or not at all.
+/// Elsewhere per-write syncs happen as usual.
+pub fn with_deferred_sync<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(unix)]
+    {
+        let previous = DEFER_SYNC.with(|d| d.replace(true));
+        let out = f();
+        DEFER_SYNC.with(|d| d.set(previous));
+        if !previous {
+            // SAFETY: sync(2) has no preconditions.
+            unsafe { libc::sync() };
+        }
+        out
+    }
+    #[cfg(not(unix))]
+    {
+        f()
+    }
+}
+
 /// Write `data` to `path` atomically: temp file → fsync → rename → fsync dir.
 ///
 /// The temp name includes the PID so the CLI and daemon never share one.
@@ -288,7 +322,9 @@ pub(crate) fn atomic_write_as(
         {
             let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
             file.write_all(data)?;
-            file.sync_all()?;
+            if !sync_deferred() {
+                file.sync_all()?;
+            }
         }
         if let Some(meta) = like {
             fs::set_permissions(&tmp, meta.permissions())?;
@@ -315,6 +351,9 @@ pub(crate) fn atomic_write_as(
 /// the metadata change, so this is a no-op there.
 #[cfg(unix)]
 fn sync_parent_dir(path: &Path) -> Result<(), UltnasCoreError> {
+    if sync_deferred() {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         fs::File::open(parent)?.sync_all()?;
     }
@@ -331,6 +370,29 @@ mod tests {
     use super::*;
     use crate::{NamespacePath, RecordBuilder};
     use tempfile::TempDir;
+
+    #[test]
+    fn deferred_sync_still_writes_everything() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::init(dir.path(), "t").unwrap();
+        let ids: Vec<_> = with_deferred_sync(|| {
+            assert!(cfg!(not(unix)) || sync_deferred());
+            (0..20)
+                .map(|i| {
+                    let body = format!("record {i}");
+                    let r = RecordBuilder::new(NamespacePath::parse("a").unwrap(), "r")
+                        .build(body.as_bytes())
+                        .unwrap();
+                    vault.write_record(&r, body.as_bytes()).unwrap();
+                    r.id
+                })
+                .collect()
+        });
+        assert!(!sync_deferred(), "the flag is cleared afterwards");
+        for id in ids {
+            vault.verify(&id).unwrap();
+        }
+    }
 
     #[test]
     fn init_open_roundtrip() {

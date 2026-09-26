@@ -44,8 +44,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - `ultnas completions <shell>` prints a completion script (bash, zsh, fish, elvish, PowerShell); hidden `ultnas manpage` and `ultnasd --manpage` print man pages for packaging
 - Debian package: `.github/workflows/deb.yml` builds `ultnas_<version>-1_amd64.deb` on Ubuntu 22.04 (manually, and for version tags), inspects it, installs it, smoke-tests a real attack and repair, removes it, and uploads it. It installs both binaries, systemd user and system services (not enabled), man pages, bash/zsh/fish completions, docs, and example policies. Vaults are never removed, even on purge
 - `TESTING_LINUX.md`: a step-by-step guide to testing the package
+- `track -r` (and `setup`) show a live progress counter while reading and tracking a large directory
 
 ### Changed
+- Bulk tracking (`track -r`, `setup`) flushes to disk once at the end instead of several times per file (`with_deferred_sync`), which dominated the time for directories like `/etc`
+- At the setup checklist, `y` means go ahead, like Enter
 - The vault defaults to `$ULTNAS_VAULT`, else `~/.local/share/ultnas` (`$XDG_DATA_HOME/ultnas`), `/var/lib/ultnas` as root, or `%LOCALAPPDATA%\ultnas` on Windows, instead of the current directory, for both `ultnas` and `ultnasd`. `ultnas setup` creates the vault if it doesn't exist, and a missing vault says how to make one
 - A write that arrived with invisible characters and also changed visible text is held as pending, even in `automatic` mode, so a clean-looking attacker edit can't slip in with it
 - `ultnasd` loads its policy (`--policy`, else the manifest's `policy_path`, else defaults); integrity flags now override the policy instead of ignoring it

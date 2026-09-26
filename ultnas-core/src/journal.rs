@@ -325,7 +325,7 @@ impl Journal {
                 file.write_all(line.as_bytes())?;
                 // Reach the OS page cache even if the BufWriter isn't full.
                 file.flush()?;
-                if sync {
+                if sync && !crate::vault::sync_deferred() {
                     file.get_ref().sync_data()?;
                 }
                 *len += line.len() as u64;
@@ -340,7 +340,7 @@ impl Journal {
                     .append(true)
                     .open(&self.path)?;
                 file.write_all(line.as_bytes())?;
-                if sync {
+                if sync && !crate::vault::sync_deferred() {
                     file.sync_data()?;
                 }
             }

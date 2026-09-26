@@ -15,8 +15,8 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 use ultnas_core::{
     canonical_path, check_trackable, covering_dir, device_of, invisible, read_live, rewrite_file,
-    ContentId, Journal, JournalEntry, JournalOp, Live, NamespacePath, TrackedDir, TrackedFile,
-    Vault,
+    with_deferred_sync, ContentId, Journal, JournalEntry, JournalOp, Live, NamespacePath,
+    TrackedDir, TrackedFile, Vault,
 };
 
 use super::prompt::confirm;
@@ -241,7 +241,9 @@ pub(crate) fn track_dir(
     // Sort files first, so the directory is recorded with its exceptions
     // before the daemon can see it and adopt (and strip) anything.
     let (mut clean, mut binary, mut dirty) = (vec![], 0usize, vec![]);
+    let mut progress = Progress::new("reading", candidates.len());
     for file in candidates {
+        progress.tick();
         match std::fs::read(&file).map(String::from_utf8) {
             Ok(Ok(text)) => {
                 let n = invisible::scan(&text).len();
@@ -269,15 +271,24 @@ pub(crate) fn track_dir(
         "tracked directory via CLI",
     )?;
 
+    progress.done();
+
     // A running daemon may adopt some of these first; they count either way.
-    let mut tracked = 0usize;
-    for file in &clean {
-        if let Outcome::Tracked(_) | Outcome::AlreadyTracked =
-            track_one(vault, file, &namespace, Some(&path), true)?
-        {
-            tracked += 1;
+    // One flush at the end instead of several per file (see with_deferred_sync).
+    let mut progress = Progress::new("tracking", clean.len());
+    let tracked = with_deferred_sync(|| -> Result<usize> {
+        let mut tracked = 0usize;
+        for file in &clean {
+            progress.tick();
+            if let Outcome::Tracked(_) | Outcome::AlreadyTracked =
+                track_one(vault, file, &namespace, Some(&path), true)?
+            {
+                tracked += 1;
+            }
         }
-    }
+        Ok(tracked)
+    })?;
+    progress.done();
 
     println!("✓ Tracking directory {}", path.display());
     println!("  {tracked} text file(s) tracked; new files will be adopted as they appear");
@@ -499,6 +510,48 @@ fn journal(
         path: Some(path.to_path_buf()),
     })?;
     Ok(())
+}
+
+/// A live `label n/total…` counter on a terminal; silent otherwise.
+struct Progress {
+    label: &'static str,
+    total: usize,
+    n: usize,
+    shown: bool,
+    tty: bool,
+    last: std::time::Instant,
+}
+
+impl Progress {
+    fn new(label: &'static str, total: usize) -> Self {
+        use std::io::IsTerminal;
+        Self {
+            label,
+            total,
+            n: 0,
+            shown: false,
+            tty: std::io::stderr().is_terminal(),
+            last: std::time::Instant::now(),
+        }
+    }
+
+    fn tick(&mut self) {
+        self.n += 1;
+        // Only for work that takes a moment, and at most ~10 times a second.
+        if !self.tty || self.total < 50 || self.last.elapsed().as_millis() < 100 {
+            return;
+        }
+        self.last = std::time::Instant::now();
+        self.shown = true;
+        eprint!("\r  {} {}/{}…", self.label, self.n, self.total);
+    }
+
+    fn done(&mut self) {
+        if self.shown {
+            eprintln!("\r  {} {}/{} done.", self.label, self.total, self.total);
+            self.shown = false;
+        }
+    }
 }
 
 fn short(id: &ContentId) -> String {
