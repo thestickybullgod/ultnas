@@ -59,7 +59,7 @@ No custom cryptographic code is written.
 
 ### Reporting Process
 
-1. **Email** `sovereignarchivist@outlook.com` with subject: `[SECURITY] Ultnas — <brief description>`
+1. **Email** `administrator@planetarchives.org` with subject: `[SECURITY] Ultnas — <brief description>`
 2. Include: affected version, reproduction steps, impact assessment, and any proof-of-concept
 3. You will receive an acknowledgment within **48 hours**
 4. A fix will be targeted within **14 days** for critical issues, **30 days** for moderate issues
