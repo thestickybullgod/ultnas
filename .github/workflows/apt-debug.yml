@@ -1,0 +1,54 @@
+name: APT signing diagnostic (temporary)
+
+# Reports facts about the signing secrets without revealing them. Delete
+# this workflow once signing works.
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Diagnose
+        env:
+          KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          PASS: ${{ secrets.APT_GPG_PASSPHRASE }}
+          FPR: 0AB5B2EA07F20A83504D9ED03F9DD92CBF9B17E8
+        run: |
+          set -u
+          gpg --version | head -1
+          echo hello > /tmp/msg
+
+          echo "== 1. Mechanism, with a throwaway key and a known passphrase"
+          export GNUPGHOME=$(mktemp -d)
+          gpg --batch --pinentry-mode loopback --passphrase 'known pass' \
+              --quick-generate-key "t <t@invalid>" ed25519 sign 1d 2>/dev/null
+          t=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
+          printf '%s' 'known pass' | gpg --batch --yes --local-user "$t" --pinentry-mode loopback \
+              --passphrase-fd 0 --clearsign -o /tmp/t.asc /tmp/msg 2>/dev/null \
+              && echo "   mechanism works" || echo "   MECHANISM FAILS"
+
+          echo "== 2. The passphrase secret (facts only, never the value)"
+          [ -z "$PASS" ] && echo "   EMPTY" || echo "   not empty"
+          case "$PASS" in [[:space:]]*) echo "   STARTS with whitespace";; *) echo "   no leading whitespace";; esac
+          case "$PASS" in *[[:space:]]) echo "   ENDS with whitespace";; *) echo "   no trailing whitespace";; esac
+          case "$PASS" in *$'\n'*|*$'\r'*) echo "   CONTAINS a line break";; *) echo "   no line breaks";; esac
+          printf '%s' "$PASS" | LC_ALL=C grep -q '[^ -~]' && echo "   has non-ASCII characters" || echo "   ASCII only"
+
+          echo "== 3. The private key secret"
+          export GNUPGHOME=$(mktemp -d)
+          printf '%s\n' "$KEY" | gpg --batch --import 2>&1 | grep -E "secret key|imported:" | sed 's/^/   /'
+          gpg --list-secret-keys --with-colons | awk -F: '/^sec/ {print "   algo=" $4 " protection=" ($15==""?"?":$15)}'
+          gpg --list-packets <(printf '%s\n' "$KEY") 2>/dev/null | grep -m1 -E "protect|gnu-dummy|unprotected" | sed 's/^/   /' || true
+
+          echo "== 4. Unlocking the key"
+          try() {
+            gpgconf --kill gpg-agent
+            printf '%s' "$1" | gpg --batch --yes --local-user "$FPR" --pinentry-mode loopback \
+                --passphrase-fd 0 --clearsign -o /tmp/s.asc /tmp/msg 2>/dev/null \
+                && echo "   $2: UNLOCKS" || echo "   $2: fails"
+          }
+          try "$PASS" "passphrase as stored"
+          trimmed=$(printf '%s' "$PASS" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+          try "$trimmed" "passphrase trimmed"
+          try "" "empty passphrase"
