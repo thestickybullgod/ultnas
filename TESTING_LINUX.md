@@ -62,10 +62,14 @@ convenience: nothing later depends on it.
 
 ## Part 2 — A test helper
 
-Paste this into your terminal. Every test uses it to show whether a file
-contains invisible characters. It only reads.
+Every test uses a small `check` command to show whether a file contains
+invisible characters. It only reads. Paste this block once: it adds `check`
+to `~/.bashrc`, so every terminal has it, and loads it into this one.
 
 ```bash
+cat >> ~/.bashrc <<'EOF'
+
+# Ultnas test helper: does a file contain invisible characters?
 check() {
   if grep -qP '[\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2064}\x{2066}-\x{2069}\x{FEFF}]' "$1"; then
     echo "DIRTY: $1 contains invisible characters"
@@ -73,15 +77,12 @@ check() {
     echo "clean: $1"
   fi
 }
+EOF
+source ~/.bashrc
+type check        # should say "check is a function"
 ```
 
-It lasts only for this terminal. If you open a new one and get
-"Command 'check' not found", paste it again, or save it for every new
-terminal with:
-
-```bash
-declare -f check >> ~/.bashrc
-```
+Delete those lines from `~/.bashrc` when you've finished testing.
 
 ## Part 3 — Set up and start
 
