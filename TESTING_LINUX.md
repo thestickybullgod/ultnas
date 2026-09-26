@@ -37,14 +37,28 @@ sudo apt install ./ultnas_0.1.0-1_amd64.deb
 protecting your files:" followed by the setup commands. No service starts on
 its own.
 
+If apt also prints "N: Download is performed unsandboxed as root … couldn't be
+accessed by user '_apt'", that's harmless: apt couldn't read your home folder
+as its restricted user, so it read the file as root. To avoid it, install from
+`/tmp` instead (`cp` the file there first).
+
 Check the pieces are there:
 
 ```bash
 ultnas --version          # ultnas 0.1.0
 ultnasd --version         # ultnasd 0.1.0
 man ultnas                # the manual page (q to quit)
-ultnas tr<TAB>            # completes to track / tracked (open a new terminal first)
 ```
+
+Then check tab completion. Open a **new** terminal (completions load when a
+shell starts), type `ultnas tr` without pressing Enter, and press the **Tab**
+key twice.
+
+**Expect:** the first Tab fills in `ultnas trac`; the second lists
+`track  tracked`. If nothing happens, completion isn't switched on in your
+shell: on bash, `sudo apt install bash-completion` and open a new terminal; on
+zsh, add `autoload -U compinit && compinit` to `~/.zshrc`. This is only a
+convenience: nothing later depends on it.
 
 ## Part 2 — A test helper
 
