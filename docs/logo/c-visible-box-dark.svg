@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="Ultnas">
+  <title>Ultnas</title>
+  <path d="M36 22 H22 V98 H36 M84 22 H98 V98 H84" fill="none" stroke="#F4F2EC" stroke-width="10"/>
+  <rect x="42" y="42" width="36" height="36" fill="none" stroke="#E4572E" stroke-width="5" stroke-dasharray="7 5"/>
+</svg>
