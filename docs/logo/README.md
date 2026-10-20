@@ -1,16 +1,13 @@
-# Ultnas logo concepts
+# Ultnas logo
 
-Three candidate marks. Each comes in three files:
+The mark is a shield around lines of text, with the hidden character it
+caught marked in orange.
 
-- `*-light.svg`: for light backgrounds
-- `*-dark.svg`: for dark backgrounds
-- `*-favicon.svg`: simplified for 16–32 px
-
-| Concept | Idea |
+| File | Use |
 |---|---|
-| A · Caught character | A "u" with a dashed box catching a hidden character |
-| B · Guarded line | A shield around lines of text, with the hidden character marked |
-| C · Visible box | Brackets around a dashed box: the invisible made visible |
+| `ultnas-light.svg` | On light backgrounds |
+| `ultnas-dark.svg` | On dark backgrounds |
+| `ultnas-favicon.svg` | Simplified for 16–32 px |
 
 Colors: ink `#14181F`, paper `#F4F2EC`, accent `#E4572E`. The wordmark is
 set in IBM Plex Mono SemiBold, lowercase `ultnas`.

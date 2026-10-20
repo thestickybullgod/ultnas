@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/ultnas-dark.svg">
+    <img src="docs/logo/ultnas-light.svg" alt="Ultnas logo" width="120" height="120">
+  </picture>
+</p>
+
 <h1 align="center">Ultnas — Universal Linux Text Normalizer and Sanitizer</h1>
 
 <p align="center">
