@@ -28,7 +28,7 @@ nationality, personal appearance, race, religion, or sexual identity and orienta
 
 ## Enforcement
 
-Violations may be reported to: **sovereignarchivist@outlook.com**
+Violations may be reported to: **support@planetarchives.org**
 
 All reports will be reviewed promptly and confidentially.
 
