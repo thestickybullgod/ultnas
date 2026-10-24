@@ -13,7 +13,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/rust-1.89%2B-orange?style=flat-square" alt="Rust 1.89+"/>
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT License"/>
+  <img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue?style=flat-square" alt="GPL-3.0-or-later License"/>
   <img src="https://img.shields.io/badge/status-pre--alpha-red?style=flat-square" alt="Pre-Alpha"/>
 </p>
 
@@ -227,4 +227,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-3.0-or-later — see [LICENSE](LICENSE).
