@@ -1,0 +1,55 @@
+[package]
+name         = "ultnas-gui"
+description  = "Desktop app for Ultnas, which protects text files from invisible-character tampering"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ultnas-gui"
+path = "src/main.rs"
+
+[dependencies]
+ultnas-core = { path = "../ultnas-core" }
+chrono      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+toml        = { workspace = true }
+similar     = { workspace = true }
+
+# The app itself is Linux-only; elsewhere the binary just says so, which keeps
+# `cargo build --workspace` working on every platform CI builds.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk           = { workspace = true }
+adw           = { workspace = true }
+async-channel = { workspace = true }
+
+[dev-dependencies]
+tempfile    = { workspace = true }
+
+# `cargo deb -p ultnas-gui --no-build`, after `cargo build --workspace --release`
+# (see .github/workflows/deb.yml).
+[package.metadata.deb]
+name = "ultnas-gui"
+maintainer = "Dustin Wayne Deen <sovereignarchivist@outlook.com>"
+copyright = "2026, Dustin Wayne Deen"
+section = "utils"
+priority = "optional"
+# The app and the CLI share the vault format, so the versions must match.
+# deb.yml checks this against the workspace version.
+depends = "$auto, ultnas (= 0.1.0)"
+extended-description = """\
+The desktop side of Ultnas, which undoes writes that slip invisible Unicode \
+characters into your text files. See whether protection is running, track \
+and untrack files and folders, review exactly what a pending edit changes \
+(with invisible characters shown) and approve it, and get a notification \
+when Ultnas strips characters, restores a file, or quarantines a namespace."""
+assets = [
+    ["target/release/ultnas-gui", "usr/bin/", "755"],
+    ["../packaging/gui/org.planetarchives.Ultnas.desktop", "usr/share/applications/", "644"],
+    ["../packaging/gui/org.planetarchives.Ultnas.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["../packaging/gui/org.planetarchives.Ultnas.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+]

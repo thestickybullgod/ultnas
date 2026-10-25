@@ -4,6 +4,7 @@ members = [
     "ultnas-core",
     "ultnas-cli",
     "ultnas-daemon",
+    "ultnas-gui",
 ]
 
 [workspace.package]
@@ -37,6 +38,11 @@ tempfile          = "3"
 hex               = "0.4"
 libc              = "0.2"
 notify            = "8"
+# Desktop app (Linux). GTK 4.6 and libadwaita 1.1 are the floor: Ubuntu 22.04.
+gtk               = { package = "gtk4", version = "0.11", features = ["v4_6"] }
+adw               = { package = "libadwaita", version = "0.9", features = ["v1_1"] }
+async-channel     = "2"
+similar           = "2"
 
 [profile.release]
 opt-level     = 3

@@ -507,7 +507,7 @@ impl FileStatus {
 }
 
 /// Everything tracked, with each file's live status.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Overview {
     /// Each tracked directory with how many files are tracked through it.
     pub dirs: Vec<(TrackedDir, usize)>,
