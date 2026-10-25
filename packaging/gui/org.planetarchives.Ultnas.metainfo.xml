@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.planetarchives.Ultnas</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Ultnas</name>
+  <summary>Protect text files from invisible-character tampering</summary>
+  <developer_name>Dustin Wayne Deen</developer_name>
+  <description>
+    <p>
+      Some Unicode characters render as nothing at all, or silently reorder the
+      text around them, so a file can change meaning without looking any
+      different. Ultnas watches the files you choose and undoes any write that
+      slips these characters in.
+    </p>
+    <p>This app is the desktop side of Ultnas:</p>
+    <ul>
+      <li>See whether protection is running, and start or stop it</li>
+      <li>Track and untrack files and folders</li>
+      <li>See exactly what a pending edit changes, with invisible characters shown, and approve it</li>
+      <li>Get a notification when Ultnas strips characters, restores a file, or quarantines a namespace</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">org.planetarchives.Ultnas.desktop</launchable>
+  <url type="homepage">https://github.com/thestickybullgod/ultnas</url>
+  <url type="bugtracker">https://github.com/thestickybullgod/ultnas/issues</url>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>ultnas-gui</binary>
+  </provides>
+</component>

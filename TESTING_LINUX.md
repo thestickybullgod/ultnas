@@ -481,12 +481,86 @@ tail -n 5 ~/.local/share/ultnas/journal.log
    protection before you log in, run `loginctl enable-linger $USER`. The
    system service (Part 9) always runs.
 
-## Part 13 — Uninstall
+## Part 13 — The desktop app
+
+Needs a graphical session (GNOME, KDE, or another desktop). Keep the daemon
+running from Part 3 and the `~/ultnas-test` folder from the earlier parts.
+
+1. Install and open it:
+
+   ```bash
+   sudo apt install ultnas-gui
+   ```
+
+   Open **Ultnas** from your applications menu (or run `ultnas-gui`).
+
+   **Expect:** the **Overview** page lists the daemon (version, PID, start
+   time), a healthy journal, what it's watching and tracking, and "No
+   namespaces are quarantined".
+
+2. **Stop and start.** Click **Stop**, then confirm.
+
+   **Expect:** "Ultnas isn't running" within a couple of seconds, and
+   `ultnas daemon status` in a terminal says no daemon is running. Click
+   **Start protection**: the Overview comes back.
+
+3. **A notification.** Write a new file with a zero-width space into the
+   tracked folder:
+
+   ```bash
+   printf 'is_\u200badmin = true\n' > ~/ultnas-test/gui.txt; sleep 1; has-invisible ~/ultnas-test/gui.txt
+   ```
+
+   **Expect:** a notification, "Invisible characters removed: Stripped 1
+   invisible character from ~/ultnas-test/gui.txt", and `clean`.
+
+4. **Track and untrack.** On the **Tracked** page, click **Track File…** and
+   pick `~/.profile` (or any text file outside `~/ultnas-test`).
+
+   **Expect:** a "Tracking ~/.profile" message, and the file in the list as
+   "Protected". `ultnas tracked` shows it too. Click its **Untrack** button and
+   confirm: it disappears from both.
+
+   Then try a file that already has an invisible character:
+
+   ```bash
+   printf 'a\u200bb\n' > ~/dirty.txt
+   ```
+
+   Track `~/dirty.txt`. **Expect:** a dialog listing `U+200B` at 1:2, offering
+   **Track Anyway**. Cancel, and `rm ~/dirty.txt`.
+
+5. **Approve a pending edit.** Turn on approved mode as in Part 6, step 1,
+   then edit a file:
+
+   ```bash
+   printf 'approval = "approved"\n' >> ~/.local/share/ultnas/policy.toml
+   systemctl --user restart ultnasd
+   printf 'second draft\n' > ~/ultnas-test/notes.txt
+   ```
+
+   **Expect:** a notification, "Edit waiting for approval". Clicking it opens
+   the **Pending** page, whose tab shows a badge of 1. The file is listed, and
+   the right side shows the old line removed and `second draft` added. Click
+   **Approve**: a confirmation appears, the list empties, and `ultnas tracked`
+   shows `status ok` for `notes.txt`.
+
+   Switch back to automatic as in Part 6, step 5.
+
+6. **Background mode.** In the main menu (☰), turn on **Keep Running in the
+   Background**, then close the window.
+
+   **Expect:** `ls ~/.config/autostart/` shows
+   `org.planetarchives.Ultnas.desktop`. Repeat step 3 with a new file name:
+   the notification still arrives with no window open. Open Ultnas again,
+   turn the setting off, and the autostart file is gone.
+
+## Part 14 — Uninstall
 
 ```bash
 systemctl --user disable --now ultnasd
 sudo systemctl disable --now ultnasd     # if you did Part 9
-sudo apt remove ultnas
+sudo apt remove ultnas                   # removes ultnas-gui too
 sudo rm /etc/apt/sources.list.d/ultnas.list /usr/share/keyrings/ultnas.gpg   # the repository too
 ```
 

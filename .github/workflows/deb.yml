@@ -21,6 +21,13 @@ jobs:
       - name: Install cargo-deb
         run: cargo install cargo-deb --locked
 
+      # The oldest supported runner also pins the desktop app's floor:
+      # GTK 4.6 and libadwaita 1.1.
+      - name: Install GTK development files and desktop-file checkers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev desktop-file-utils appstream
+
       - name: Build release binaries
         run: cargo build --workspace --release --locked
 
@@ -34,13 +41,25 @@ jobs:
           ./target/release/ultnas completions fish > target/assets/ultnas.fish
 
       - name: Build .deb
-        run: cargo deb -p ultnas-cli --no-build
+        run: |
+          cargo deb -p ultnas-cli --no-build
+          cargo deb -p ultnas-gui --no-build
 
       - name: Inspect package
         run: |
-          deb=$(ls target/debian/*.deb)
-          dpkg-deb --info "$deb"
-          dpkg-deb --contents "$deb"
+          for deb in target/debian/*.deb; do
+            dpkg-deb --info "$deb"
+            dpkg-deb --contents "$deb"
+          done
+          # The app must require exactly this version of ultnas (they share
+          # the vault format); cargo-deb can't fill it in, so it's written out.
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "ultnas-gui") | .version')
+          depends=$(dpkg-deb -f target/debian/ultnas-gui_*.deb Depends)
+          echo "ultnas-gui Depends: $depends"
+          if ! grep -qF "ultnas (= $version)" <<<"$depends"; then
+            echo "::error::ultnas-gui must depend on ultnas (= $version); update depends in ultnas-gui/Cargo.toml"
+            exit 1
+          fi
 
       - name: Install and smoke-test
         run: |
@@ -50,6 +69,13 @@ jobs:
           man -w ultnas ultnasd
           test -f /usr/lib/systemd/user/ultnasd.service
           test -f /usr/lib/systemd/system/ultnasd.service
+
+          # The desktop app: starts far enough to answer without a display,
+          # and its desktop entry and AppStream metadata are valid.
+          ultnas-gui --version
+          desktop-file-validate /usr/share/applications/org.planetarchives.Ultnas.desktop
+          appstreamcli validate --no-net /usr/share/metainfo/org.planetarchives.Ultnas.metainfo.xml
+          test -f /usr/share/icons/hicolor/scalable/apps/org.planetarchives.Ultnas.svg
 
           export ULTNAS_VAULT="$RUNNER_TEMP/vault"
           ultnas init --name smoke
@@ -85,9 +111,10 @@ jobs:
           echo "bulk track of 3000 files took $(echo "$(date +%s.%N) - $start" | bc) s"
           test "$(ultnas tracked | grep -c '\.conf$')" -eq 3000
 
+          # Removing ultnas takes ultnas-gui with it (it depends on ultnas).
           sudo apt-get remove -y ultnas
           # (not `command -v`: bash caches the path it found earlier)
-          test ! -e /usr/bin/ultnas && test ! -e /usr/bin/ultnasd
+          test ! -e /usr/bin/ultnas && test ! -e /usr/bin/ultnasd && test ! -e /usr/bin/ultnas-gui
 
       - uses: actions/upload-artifact@v4
         with:

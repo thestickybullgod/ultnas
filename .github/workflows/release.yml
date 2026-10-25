@@ -29,6 +29,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - name: Install GTK development files (Linux, for the desktop app)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
       - name: Build release binaries
         run: cargo build --workspace --release --target ${{ matrix.target }}
       - name: Package (Linux/macOS)

@@ -87,6 +87,15 @@ jobs:
           sudo apt-get install -y ultnas
           ultnas --version
           ultnasd --version
+          if apt-cache show ultnas-gui >/dev/null 2>&1; then
+            sudo apt-get install -y ultnas-gui
+            ultnas-gui --version
+          fi
+          # Releases before the desktop app have no ultnas-gui package.
+          if apt-cache show ultnas-gui >/dev/null 2>&1; then
+            sudo apt-get install -y ultnas-gui
+            ultnas-gui --version
+          fi
           sudo apt-get remove -y ultnas
 
       - uses: actions/upload-pages-artifact@v3
@@ -125,3 +134,7 @@ jobs:
           sudo apt-get install -y ultnas
           ultnas --version
           ultnasd --version
+          if apt-cache show ultnas-gui >/dev/null 2>&1; then
+            sudo apt-get install -y ultnas-gui
+            ultnas-gui --version
+          fi

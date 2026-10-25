@@ -101,6 +101,24 @@ ultnasd &
 The vault lives in `~/.local/share/ultnas` (`/var/lib/ultnas` as root);
 `--vault` or `$ULTNAS_VAULT` picks another.
 
+## Desktop App
+
+On a Linux desktop (GTK 4, so GNOME, KDE, and others; Ubuntu 22.04+ or
+Debian 12+), install the app from the same repository:
+
+```bash
+sudo apt install ultnas-gui
+```
+
+Open **Ultnas** from your applications menu. It shows whether protection is
+running (and starts or stops it), lists what's tracked and lets you track or
+untrack files and folders, shows exactly what each pending edit changes, with
+invisible characters made visible, so you can approve it, and sends a
+notification when Ultnas strips characters, restores a file, or quarantines a
+namespace. Turn on **Keep Running in the Background** in its menu to get
+notifications with no window open, from login. It uses the same vault as the
+CLI, and you create the vault with `ultnas setup` first.
+
 ## Choosing What to Protect
 
 `ultnas setup` offers what exists on your machine, with the recommended items
@@ -198,6 +216,7 @@ ultnas/
 ├── ultnas-core/     # Library: invisible-character detection, tracking, vault, journal, policy, IPC
 ├── ultnas-cli/      # `ultnas`: setup, track, approve, status, purge, …
 ├── ultnas-daemon/   # `ultnasd`: watcher, integrity guard, scheduler, IPC server
+├── ultnas-gui/      # `ultnas-gui`: the desktop app (GTK 4 + libadwaita, Linux)
 ├── docs/            # Architecture, policy guide, security model, onboarding
 └── policy/          # Example policy files
 ```

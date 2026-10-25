@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Ultnas
+GenericName=Text File Protection
+Comment=See what Ultnas protects, approve edits, and get notified when it steps in
+Exec=ultnas-gui
+Icon=org.planetarchives.Ultnas
+Terminal=false
+Categories=Utility;Security;
+Keywords=invisible;unicode;integrity;tamper;trojan;
+StartupNotify=true
+X-GNOME-UsesNotifications=true
