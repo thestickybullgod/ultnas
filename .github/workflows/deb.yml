@@ -51,9 +51,10 @@ jobs:
             dpkg-deb --info "$deb"
             dpkg-deb --contents "$deb"
           done
-          # The app must require exactly this version of ultnas (they share
-          # the vault format); cargo-deb can't fill it in, so it's written out.
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "ultnas-gui") | .version')
+          # The app must require exactly the ultnas package built here (they
+          # share the vault format); cargo-deb can't fill it in, so it's
+          # written out in ultnas-gui/Cargo.toml.
+          version=$(dpkg-deb -f target/debian/ultnas_*.deb Version)
           depends=$(dpkg-deb -f target/debian/ultnas-gui_*.deb Depends)
           echo "ultnas-gui Depends: $depends"
           if ! grep -qF "ultnas (= $version)" <<<"$depends"; then

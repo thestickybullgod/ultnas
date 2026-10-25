@@ -38,9 +38,10 @@ maintainer = "Dustin Wayne Deen <sovereignarchivist@outlook.com>"
 copyright = "2026, Dustin Wayne Deen"
 section = "utils"
 priority = "optional"
-# The app and the CLI share the vault format, so the versions must match.
-# deb.yml checks this against the workspace version.
-depends = "$auto, ultnas (= 0.1.0)"
+# The app and the CLI share the vault format, so the versions must match:
+# the Debian version of the ultnas package (cargo-deb adds the "-1"
+# revision). deb.yml checks it against the ultnas package it builds.
+depends = "$auto, ultnas (= 0.1.0-1)"
 extended-description = """\
 The desktop side of Ultnas, which undoes writes that slip invisible Unicode \
 characters into your text files. See whether protection is running, track \
