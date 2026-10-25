@@ -8,7 +8,10 @@
 use anyhow::Result;
 use clap::Subcommand;
 use std::path::Path;
-use ultnas_core::{Journal, JournalOp, NamespacePath};
+use ultnas_core::{
+    ops::{self, Actor},
+    Journal, JournalOp, NamespacePath,
+};
 
 #[derive(Subcommand)]
 pub enum IntegrityCommands {
@@ -161,15 +164,12 @@ fn cmd_violations(vault_root: &Path, limit: usize) -> Result<()> {
 }
 
 fn cmd_lift_quarantine(vault_root: &Path, namespace: &str, yes: bool) -> Result<()> {
-    let namespace = NamespacePath::parse(namespace)?.as_str();
-    let journal_path = vault_root.join("journal.log");
-    if !journal_path.exists() {
+    let ns = NamespacePath::parse(namespace)?;
+    let namespace = ns.as_str();
+    let Some(quarantined) = ops::quarantined(vault_root)? else {
         println!("No journal found — nothing is quarantined.");
         return Ok(());
-    }
-    let journal = Journal::open_shared(&journal_path);
-
-    let quarantined = journal.quarantined_namespaces()?;
+    };
     if !quarantined.contains(&namespace) {
         println!(
             "Namespace `{}` is not quarantined — nothing to lift.",
@@ -199,17 +199,7 @@ fn cmd_lift_quarantine(vault_root: &Path, namespace: &str, yes: bool) -> Result<
         }
     }
 
-    // Write a QuarantineLift entry to the journal (daemon picks it up on next scan)
-    journal.write(ultnas_core::JournalEntry {
-        ts: chrono::Utc::now(),
-        op: JournalOp::QuarantineLift,
-        id: None,
-        ns: Some(namespace.clone()),
-        label: Some("operator".into()),
-        size: None,
-        detail: Some("quarantine lifted via CLI".into()),
-        path: None,
-    })?;
+    ops::lift_quarantine(vault_root, &ns, Actor::Cli)?;
 
     println!("✓ Quarantine lift recorded for namespace `{}`.", namespace);
     println!("  A running daemon applies it as soon as it sees the journal change.");

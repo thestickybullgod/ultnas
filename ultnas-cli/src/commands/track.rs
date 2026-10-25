@@ -9,21 +9,18 @@
 //! `track --recursive <dir>` tracks every text file under a directory, and
 //! the daemon adopts files created there later.
 
-use anyhow::{bail, Context, Result};
-use chrono::Utc;
+use anyhow::{bail, Result};
 use clap::Args;
 use std::path::{Path, PathBuf};
 use ultnas_core::{
-    canonical_path, check_trackable, covering_dir, device_of, invisible, read_live, rewrite_file,
-    with_deferred_sync, ContentId, Journal, JournalEntry, JournalOp, Live, NamespacePath,
-    TrackedDir, TrackedFile, Vault,
+    canonical_path, check_trackable,
+    ops::{self, Actor, ApproveOutcome, DirProgress, UntrackOutcome},
+    ContentId, NamespacePath, Vault,
 };
 
-use super::prompt::confirm;
+pub(crate) use ultnas_core::ops::{home, TrackOutcome as Outcome};
 
-/// Directory sizes past which `track --recursive` asks before going ahead.
-const CONFIRM_FILES: usize = 10_000;
-const CONFIRM_BYTES: u64 = 1 << 30;
+use super::prompt::confirm;
 
 #[derive(Args)]
 pub struct TrackArgs {
@@ -109,13 +106,6 @@ pub fn track(vault_root: &Path, args: TrackArgs) -> Result<()> {
     }
 }
 
-pub(crate) enum Outcome {
-    Tracked(ContentId),
-    AlreadyTracked,
-    NotText,
-    HasInvisible(Vec<invisible::Finding>),
-}
-
 pub(crate) fn track_one(
     vault: &Vault,
     path: &Path,
@@ -123,42 +113,14 @@ pub(crate) fn track_one(
     source: Option<&Path>,
     accept_existing: bool,
 ) -> Result<Outcome> {
-    let content = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let Ok(text) = std::str::from_utf8(&content) else {
-        return Ok(Outcome::NotText);
-    };
-    let found = invisible::scan(text);
-    if !found.is_empty() && !accept_existing {
-        return Ok(Outcome::HasInvisible(found));
-    }
-
-    let id = vault.update_tracked(path, |state| {
-        if state.is_some() {
-            return Ok(None);
-        }
-        let id = vault.write_version(namespace, path, &content)?;
-        *state = Some(TrackedFile {
-            path: path.to_path_buf(),
-            namespace: namespace.clone(),
-            stable: id,
-            pending: None,
-            updated_at: Utc::now(),
-            source: source.map(Path::to_path_buf),
-        });
-        Ok(Some(id))
-    })?;
-    let Some(id) = id else {
-        return Ok(Outcome::AlreadyTracked);
-    };
-    journal(
+    Ok(ops::track_file_from(
         vault,
-        JournalOp::TrackFile,
-        Some(id),
-        namespace,
         path,
-        "tracked via CLI",
-    )?;
-    Ok(Outcome::Tracked(id))
+        namespace,
+        source,
+        accept_existing,
+        Actor::Cli,
+    )?)
 }
 
 pub(crate) struct DirOptions {
@@ -167,68 +129,22 @@ pub(crate) struct DirOptions {
     pub yes: bool,
 }
 
-/// Why tracking `path` deserves a second look, if it does.
-fn needs_confirmation(path: &Path, files: usize, bytes: u64) -> Vec<String> {
-    let mut why = vec![];
-    if path.parent().is_none() {
-        why.push("it is the root of the filesystem".to_string());
-    } else if home().is_some_and(|h| !path.starts_with(h)) {
-        why.push("it is outside your home directory".to_string());
-    }
-    if files > CONFIRM_FILES || bytes > CONFIRM_BYTES {
-        why.push(format!(
-            "it holds {files} candidate files ({} MiB); each is copied into the vault",
-            bytes >> 20
-        ));
-    }
-    why
-}
-
-/// The user's home directory, canonical.
-pub(crate) fn home() -> Option<PathBuf> {
-    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::fs::canonicalize(std::env::var_os(var)?).ok()
-}
-
 pub(crate) fn track_dir(
     vault: &Vault,
     path: PathBuf,
     namespace: NamespacePath,
     opts: &DirOptions,
 ) -> Result<()> {
-    check_trackable(&path)?;
-    if vault.tracked_dirs()?.iter().any(|d| d.path == path) {
-        bail!("{} is already tracked", path.display());
-    }
-    let mut dir = TrackedDir {
-        path: path.clone(),
-        namespace: namespace.clone(),
-        exclude: opts.exclude.clone(),
-        ignored: vec![],
-        added_at: Utc::now(),
-        device: std::fs::metadata(&path).ok().as_ref().and_then(device_of),
-    };
-    let vault_root = canonical_path(vault.root())?;
-    if vault_root.starts_with(&path) {
-        dir.ignored.push(vault_root);
-    }
-
     // Preview from metadata alone, before reading any file.
-    let candidates = dir.candidates();
-    let bytes: u64 = candidates
-        .iter()
-        .filter_map(|p| std::fs::metadata(p).ok())
-        .map(|m| m.len())
-        .sum();
-    let why = needs_confirmation(&path, candidates.len(), bytes);
-    if !why.is_empty() {
+    let preview = ops::preview_dir(vault, &path, &namespace, &opts.exclude)?;
+    if !preview.reasons.is_empty() {
         println!(
             "About to track {} (up to {} files, {} MiB) because:",
             path.display(),
-            candidates.len(),
-            bytes >> 20
+            preview.candidates.len(),
+            preview.bytes >> 20
         );
-        for w in &why {
+        for w in &preview.reasons {
             println!("  - {w}");
         }
         println!("  Other filesystems mounted below it are not included.");
@@ -238,69 +154,41 @@ pub(crate) fn track_dir(
         }
     }
 
-    // Sort files first, so the directory is recorded with its exceptions
-    // before the daemon can see it and adopt (and strip) anything.
-    let (mut clean, mut binary, mut dirty) = (vec![], 0usize, vec![]);
-    let mut progress = Progress::new("reading", candidates.len());
-    for file in candidates {
-        progress.tick();
-        match std::fs::read(&file).map(String::from_utf8) {
-            Ok(Ok(text)) => {
-                let n = invisible::scan(&text).len();
-                if n == 0 || opts.accept_existing {
-                    clean.push(file);
-                } else {
-                    dirty.push((file, n));
-                }
-            }
-            Ok(Err(_)) => binary += 1,
-            Err(e) => eprintln!("  skipping {}: {}", file.display(), e),
-        }
-    }
-    dir.ignored.extend(dirty.iter().map(|(p, _)| p.clone()));
-    vault.update_tracked_dir(&path, |state| {
-        *state = Some(dir.clone());
-        Ok(())
-    })?;
-    journal(
+    let mut progress = Progress::new("reading", preview.candidates.len());
+    let report = ops::track_dir(
         vault,
-        JournalOp::TrackFile,
-        None,
-        &namespace,
-        &path,
-        "tracked directory via CLI",
-    )?;
-
-    progress.done();
-
-    // A running daemon may adopt some of these first; they count either way.
-    // One flush at the end instead of several per file (see with_deferred_sync).
-    let mut progress = Progress::new("tracking", clean.len());
-    let tracked = with_deferred_sync(|| -> Result<usize> {
-        let mut tracked = 0usize;
-        for file in &clean {
-            progress.tick();
-            if let Outcome::Tracked(_) | Outcome::AlreadyTracked =
-                track_one(vault, file, &namespace, Some(&path), true)?
-            {
-                tracked += 1;
+        preview,
+        opts.accept_existing,
+        Actor::Cli,
+        &mut |p| match p {
+            DirProgress::Reading { .. } => progress.tick(),
+            DirProgress::Skipped { path, error } => {
+                eprintln!("  skipping {}: {}", path.display(), error)
             }
-        }
-        Ok(tracked)
-    })?;
-    progress.done();
-
+            DirProgress::ReadingDone { .. } => progress.done(),
+            DirProgress::Tracking { n, total } => {
+                if n == 1 {
+                    progress = Progress::new("tracking", total);
+                }
+                progress.tick();
+            }
+            DirProgress::TrackingDone { .. } => progress.done(),
+        },
+    )?;
     println!("✓ Tracking directory {}", path.display());
-    println!("  {tracked} text file(s) tracked; new files will be adopted as they appear");
-    if binary > 0 {
-        println!("  {binary} binary file(s) skipped");
+    println!(
+        "  {} text file(s) tracked; new files will be adopted as they appear",
+        report.tracked
+    );
+    if report.binary > 0 {
+        println!("  {} binary file(s) skipped", report.binary);
     }
-    if !dirty.is_empty() {
+    if !report.dirty.is_empty() {
         println!(
             "  {} file(s) already contain invisible characters and were NOT tracked:",
-            dirty.len()
+            report.dirty.len()
         );
-        for (p, n) in &dirty {
+        for (p, n) in &report.dirty {
             println!("    {} ({n})", p.display());
         }
         println!("  Clean them and `ultnas track` each, or re-run with --accept-existing.");
@@ -311,80 +199,27 @@ pub(crate) fn track_dir(
 pub fn untrack(vault_root: &Path, args: FileArg) -> Result<()> {
     let vault = Vault::open(vault_root)?;
     let path = canonical_path(&args.file)?;
-
-    if let Some(dir) = vault.update_tracked_dir(&path, |state| Ok(state.take()))? {
-        let mut n = 0usize;
-        for t in vault.tracked_files()? {
-            if t.source.as_deref() != Some(dir.path.as_path()) {
-                continue;
-            }
-            let removed = vault.update_tracked(&t.path, |state| {
-                Ok(state
-                    .take_if(|s| s.source.as_deref() == Some(dir.path.as_path()))
-                    .is_some())
-            })?;
-            if removed {
-                n += 1;
-                journal(
-                    &vault,
-                    JournalOp::UntrackFile,
-                    Some(t.stable),
-                    &t.namespace,
-                    &t.path,
-                    "untracked with its directory via CLI",
-                )?;
-            }
+    match ops::untrack(&vault, &path, Actor::Cli)? {
+        UntrackOutcome::Dir { files } => {
+            println!("✓ No longer tracking directory {}", path.display());
+            println!("  {files} file(s) untracked; their versions stay in the vault.");
+            println!("  Files tracked on their own inside it are unaffected.");
         }
-        journal(
-            &vault,
-            JournalOp::UntrackFile,
-            None,
-            &dir.namespace,
-            &path,
-            "untracked directory via CLI",
-        )?;
-        println!("✓ No longer tracking directory {}", path.display());
-        println!("  {n} file(s) untracked; their versions stay in the vault.");
-        println!("  Files tracked on their own inside it are unaffected.");
-        return Ok(());
-    }
-
-    let removed = vault.update_tracked(&path, |state| Ok(state.take()))?;
-    // Keep a tracked directory from adopting it straight back.
-    let dirs = vault.tracked_dirs()?;
-    let parent = covering_dir(&dirs, &path).map(|d| d.path.clone());
-    if let Some(dir) = &parent {
-        vault.update_tracked_dir(dir, |state| {
-            if let Some(d) = state.as_mut() {
-                d.ignored.push(path.clone());
-            }
-            Ok(())
-        })?;
-    }
-    match (removed, parent) {
-        (Some(t), dir) => {
-            journal(
-                &vault,
-                JournalOp::UntrackFile,
-                Some(t.stable),
-                &t.namespace,
-                &path,
-                "untracked via CLI",
-            )?;
+        UntrackOutcome::File { kept_out_of } => {
             println!("✓ No longer tracking {}", path.display());
             println!("  Its versions stay in the vault.");
-            if let Some(dir) = dir {
+            if let Some(dir) = kept_out_of {
                 println!("  It won't be re-adopted from {}.", dir.display());
             }
         }
-        (None, Some(dir)) => {
+        UntrackOutcome::KeptOutOf(dir) => {
             println!(
                 "✓ {} will no longer be adopted from {}",
                 path.display(),
                 dir.display()
             );
         }
-        (None, None) => bail!("{} is not tracked", path.display()),
+        UntrackOutcome::NotTracked => bail!("{} is not tracked", path.display()),
     }
     Ok(())
 }
@@ -392,60 +227,30 @@ pub fn untrack(vault_root: &Path, args: FileArg) -> Result<()> {
 pub fn approve(vault_root: &Path, args: FileArg) -> Result<()> {
     let vault = Vault::open(vault_root)?;
     let path = canonical_path(&args.file)?;
-    let approved = vault.update_tracked(&path, |state| {
-        let Some(t) = state.as_mut() else {
-            return Ok(Err(format!("{} is not tracked", path.display())));
-        };
-        let Some(pending) = t.pending.take() else {
-            return Ok(Err(format!(
-                "{} has no pending edit to approve",
-                path.display()
-            )));
-        };
-        // Fail before changing state if the pending copy is damaged.
-        let content = vault.read_verified(&pending)?;
-        t.stable = pending;
-        t.updated_at = Utc::now();
-        Ok(Ok((t.clone(), content)))
-    })?;
-    let (t, content) = match approved {
-        Ok(v) => v,
-        Err(msg) => bail!(msg),
-    };
-
-    journal(
-        &vault,
-        JournalOp::VersionApproved,
-        Some(t.stable),
-        &t.namespace,
-        &path,
-        "approved via CLI",
-    )?;
-    // The live file may have been restored to the old version since.
-    let observed = read_live(&path)?.content_id();
-    if observed != Some(t.stable) {
-        rewrite_file(&path, &content, observed)
-            .with_context(|| format!("{} was approved, but rewriting it failed", path.display()))?;
-        println!("  Rewrote {} with the approved version.", path.display());
+    match ops::approve(&vault, &path, Actor::Cli)? {
+        ApproveOutcome::Approved { stable, rewrote } => {
+            if rewrote {
+                println!("  Rewrote {} with the approved version.", path.display());
+            }
+            println!("✓ Approved {}", path.display());
+            println!("  stable version {}", short(&stable));
+            Ok(())
+        }
+        ApproveOutcome::NotTracked => bail!("{} is not tracked", path.display()),
+        ApproveOutcome::NoPending => {
+            bail!("{} has no pending edit to approve", path.display())
+        }
     }
-    println!("✓ Approved {}", path.display());
-    println!("  stable version {}", short(&t.stable));
-    Ok(())
 }
 
 pub fn list(vault_root: &Path) -> Result<()> {
     let vault = Vault::open(vault_root)?;
-    let dirs = vault.tracked_dirs()?;
-    let tracked = vault.tracked_files()?;
-    if tracked.is_empty() && dirs.is_empty() {
+    let overview = ops::tracked_overview(&vault)?;
+    if overview.files.is_empty() && overview.dirs.is_empty() {
         println!("No tracked files. Add one with `ultnas track <file>`.");
         return Ok(());
     }
-    for d in &dirs {
-        let n = tracked
-            .iter()
-            .filter(|t| t.source.as_deref() == Some(d.path.as_path()))
-            .count();
+    for (d, n) in &overview.dirs {
         println!("{} (directory)", d.path.display());
         print!("  namespace {}  {n} file(s)", ns_label(&d.namespace));
         if !d.exclude.is_empty() {
@@ -453,27 +258,13 @@ pub fn list(vault_root: &Path) -> Result<()> {
         }
         println!();
     }
-    for t in tracked {
-        let status = match read_live(&t.path) {
-            Err(e) => format!("unreadable: {e}"),
-            Ok(Live::Missing) => "missing".to_string(),
-            Ok(Live::NotRegular) => "not a regular file".to_string(),
-            Ok(live) => {
-                let id = live.content_id();
-                if id == Some(t.stable) {
-                    "ok".to_string()
-                } else if id == t.pending {
-                    "pending approval".to_string()
-                } else {
-                    "changed — the daemon will check it".to_string()
-                }
-            }
-        };
+    for (t, status) in overview.files {
         println!("{}", t.path.display());
         println!(
-            "  namespace {}  stable {}  status {status}",
+            "  namespace {}  stable {}  status {}",
             ns_label(&t.namespace),
-            short(&t.stable)
+            short(&t.stable),
+            status.label()
         );
         if let Some(p) = t.pending {
             println!("  pending   {}  (`ultnas approve` to promote)", short(&p));
@@ -488,28 +279,6 @@ fn ns_label(ns: &NamespacePath) -> String {
     } else {
         ns.as_str()
     }
-}
-
-fn journal(
-    vault: &Vault,
-    op: JournalOp,
-    id: Option<ContentId>,
-    namespace: &NamespacePath,
-    path: &Path,
-    detail: &str,
-) -> Result<()> {
-    let journal = Journal::open_shared(&vault.root().join("journal.log"));
-    journal.write(JournalEntry {
-        ts: Utc::now(),
-        op,
-        id,
-        ns: Some(namespace.as_str()),
-        label: Some("operator".into()),
-        size: None,
-        detail: Some(detail.into()),
-        path: Some(path.to_path_buf()),
-    })?;
-    Ok(())
 }
 
 /// A live `label n/total…` counter on a terminal; silent otherwise.
@@ -556,30 +325,4 @@ impl Progress {
 
 fn short(id: &ContentId) -> String {
     id.to_hex()[..12].to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn root_and_large_directories_need_confirmation() {
-        let root = if cfg!(windows) { r"C:\" } else { "/" };
-        let why = needs_confirmation(Path::new(root), 1, 1);
-        assert!(why.iter().any(|w| w.contains("root")), "{why:?}");
-
-        let big = needs_confirmation(Path::new(root).join("x").as_path(), CONFIRM_FILES + 1, 0);
-        assert!(big.iter().any(|w| w.contains("candidate files")), "{big:?}");
-        let heavy = needs_confirmation(Path::new(root).join("x").as_path(), 1, CONFIRM_BYTES + 1);
-        assert!(
-            heavy.iter().any(|w| w.contains("candidate files")),
-            "{heavy:?}"
-        );
-    }
-
-    #[test]
-    fn small_directory_in_home_needs_no_confirmation() {
-        let Some(home) = home() else { return };
-        assert!(needs_confirmation(&home.join("project"), 10, 1024).is_empty());
-    }
 }

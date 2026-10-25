@@ -64,6 +64,24 @@ pub enum UltnasCoreError {
     #[error("{0} changed while it was being replaced")]
     ChangedDuringWrite(PathBuf),
 
+    /// A live file couldn't be read to track it.
+    #[error("reading {}: {source}", path.display())]
+    ReadLive {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("{} is already tracked", .0.display())]
+    AlreadyTracked(PathBuf),
+
+    /// The pending edit became the stable version, but putting it back into
+    /// the live file failed.
+    #[error("{} was approved, but rewriting it failed: {source}", path.display())]
+    RewriteAfterApprove {
+        path: PathBuf,
+        source: Box<UltnasCoreError>,
+    },
+
     /// No daemon is listening on the vault's IPC endpoint.
     #[error("no daemon is running for this vault (nothing listening on {0})")]
     DaemonNotRunning(String),

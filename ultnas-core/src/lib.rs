@@ -34,6 +34,7 @@ pub mod journal;
 pub mod live;
 pub mod mirror;
 pub mod namespace;
+pub mod ops;
 pub mod policy;
 pub mod record;
 pub mod retention;
