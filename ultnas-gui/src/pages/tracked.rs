@@ -69,13 +69,13 @@ impl Tracked {
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
         let empty = adw::StatusPage::builder()
-            .icon_name("folder-symbolic")
             .title("Nothing tracked yet")
             .description(
                 "Track a file, such as ~/.bashrc, or a folder of scripts or source \
                  code. Ultnas then undoes any write that slips invisible characters in.",
             )
             .build();
+        ui::set_logo(&empty);
         stack.add_named(&empty, Some("empty"));
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::None);

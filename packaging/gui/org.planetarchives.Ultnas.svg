@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="Ultnas">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="128" height="128" role="img" aria-label="Ultnas">
   <title>Ultnas</title>
-  <path d="M60 12 L98 25 V58 C98 83 81 100 60 108 C39 100 22 83 22 58 V25 Z" fill="none" stroke="#14181F" stroke-width="8" stroke-linejoin="round"/>
-  <path d="M42 44 H78 M42 60 H52 M68 60 H78 M42 76 H66" fill="none" stroke="#14181F" stroke-width="7" stroke-linecap="round"/>
-  <rect x="56" y="56" width="8" height="8" fill="#E4572E"/>
+  <path d="M60 12 L98 25 V58 C98 83 81 100 60 108 C39 100 22 83 22 58 V25 Z" fill="none" stroke="#90C1F7" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M42 44 H78 M42 60 H52 M68 60 H78 M42 76 H66" fill="none" stroke="#90C1F7" stroke-width="7" stroke-linecap="round"/>
+  <rect x="56" y="56" width="8" height="8" fill="#DF6E49"/>
 </svg>

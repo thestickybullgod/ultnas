@@ -36,13 +36,13 @@ impl Pending {
     pub fn new(shell: Rc<Shell>) -> Rc<Self> {
         let stack = gtk::Stack::new();
         let empty = adw::StatusPage::builder()
-            .icon_name("emblem-ok-symbolic")
             .title("Nothing waiting for approval")
             .description(
                 "With a namespace’s approval set to “approved”, clean edits wait here \
                  until you approve them. Otherwise they’re accepted automatically.",
             )
             .build();
+        ui::set_logo(&empty);
         stack.add_named(&empty, Some("empty"));
 
         let list = gtk::ListBox::new();

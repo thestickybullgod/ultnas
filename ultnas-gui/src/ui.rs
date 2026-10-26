@@ -148,6 +148,21 @@ pub fn inform(parent: &adw::ApplicationWindow, heading: &str, body: &str) {
     dialog.present();
 }
 
+/// The app icon, built in for when it isn't installed (e.g. `cargo run`).
+const LOGO_SVG: &[u8] = include_bytes!("../../packaging/gui/org.planetarchives.Ultnas.svg");
+
+/// Show the Ultnas logo as a status page's picture: the installed icon when
+/// the icon theme has it (crisp at any scale), else the built-in copy.
+pub fn set_logo(page: &adw::StatusPage) {
+    let installed = gtk::gdk::Display::default()
+        .is_some_and(|d| gtk::IconTheme::for_display(&d).has_icon(crate::APP_ID));
+    if installed {
+        page.set_icon_name(Some(crate::APP_ID));
+    } else if let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_static(LOGO_SVG)) {
+        page.set_paintable(Some(&texture));
+    }
+}
+
 /// A row showing a fact. Titles and subtitles are plain text.
 pub fn row(title: &str, subtitle: &str) -> adw::ActionRow {
     let row = adw::ActionRow::new();

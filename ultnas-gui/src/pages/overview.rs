@@ -41,13 +41,13 @@ impl Overview {
         let stack = gtk::Stack::new();
 
         let no_vault = adw::StatusPage::builder()
-            .icon_name("dialog-information-symbolic")
             .title("No vault yet")
             .description(
                 "Run “ultnas setup” in a terminal to create your vault and choose \
                  what to protect, then come back here.",
             )
             .build();
+        ui::set_logo(&no_vault);
         stack.add_named(&no_vault, Some("novault"));
 
         let start = gtk::Button::with_label("Start protection");
@@ -55,17 +55,17 @@ impl Overview {
         start.add_css_class("suggested-action");
         start.set_halign(gtk::Align::Center);
         let stopped = adw::StatusPage::builder()
-            .icon_name("media-playback-stop-symbolic")
             .title("Ultnas isn’t running")
             .description("Your tracked files aren’t protected until the daemon starts.")
             .child(&start)
             .build();
+        ui::set_logo(&stopped);
         stack.add_named(&stopped, Some("stopped"));
 
         let error = adw::StatusPage::builder()
-            .icon_name("dialog-warning-symbolic")
             .title("Can’t reach the daemon")
             .build();
+        ui::set_logo(&error);
         stack.add_named(&error, Some("error"));
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
