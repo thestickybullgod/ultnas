@@ -557,6 +557,26 @@ fn file_status(t: &TrackedFile) -> FileStatus {
 
 // ── Quarantine ───────────────────────────────────────────────────────────────
 
+/// How to show a namespace to people: the root namespace's name is empty.
+pub fn namespace_label(ns: &str) -> &str {
+    if ns.is_empty() {
+        ROOT_LABEL
+    } else {
+        ns
+    }
+}
+
+/// What the root namespace is called on screen; also accepted as input.
+pub const ROOT_LABEL: &str = "(root)";
+
+/// A namespace as typed by a person: [`ROOT_LABEL`] or `""` is the root.
+pub fn parse_namespace(s: &str) -> Result<NamespacePath, UltnasCoreError> {
+    if s == ROOT_LABEL {
+        return Ok(NamespacePath::root());
+    }
+    NamespacePath::parse(s)
+}
+
 /// Namespaces quarantined now, or `None` if the vault has no journal yet
 /// (so nothing can be).
 pub fn quarantined(vault_root: &Path) -> Result<Option<BTreeSet<String>>, UltnasCoreError> {
@@ -860,6 +880,15 @@ mod tests {
             tracked_overview(&env.vault).unwrap().files[0].1,
             FileStatus::Missing
         );
+    }
+
+    #[test]
+    fn the_root_namespace_has_a_label() {
+        assert_eq!(namespace_label(""), "(root)");
+        assert_eq!(namespace_label("etc"), "etc");
+        assert!(parse_namespace("(root)").unwrap().is_root());
+        assert!(parse_namespace("").unwrap().is_root());
+        assert_eq!(parse_namespace("etc").unwrap().as_str(), "etc");
     }
 
     #[test]

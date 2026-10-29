@@ -252,7 +252,13 @@ impl Overview {
         }
         for a in s.recent_alerts.iter().rev() {
             let at = a.at.with_timezone(&Local).format("%H:%M:%S");
-            alerts.add(&ui::row(&a.detail, &format!("{at} · {}", a.kind)));
+            // A "quarantined" alert's detail is the namespace, empty for the root.
+            let title = if a.kind == "quarantined" {
+                ops::namespace_label(&a.detail)
+            } else {
+                &a.detail
+            };
+            alerts.add(&ui::row(title, &format!("{at} · {}", a.kind)));
         }
         self.content.append(&alerts);
     }

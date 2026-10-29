@@ -7,6 +7,7 @@ use std::{path::Path, time::Duration};
 use ultnas_core::{
     canonical_path,
     ipc::{self, DaemonStatus, Response},
+    ops,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -95,7 +96,12 @@ fn print_status(s: &DaemonStatus) {
     if s.quarantined.is_empty() {
         println!("  quarantine none");
     } else {
-        println!("  quarantine {}", s.quarantined.join(", "));
+        let names: Vec<&str> = s
+            .quarantined
+            .iter()
+            .map(|n| ops::namespace_label(n))
+            .collect();
+        println!("  quarantine {}", names.join(", "));
     }
 
     let w = &s.watcher;
@@ -135,8 +141,17 @@ fn print_status(s: &DaemonStatus) {
                 "  {}  {:<16} {}",
                 a.at.with_timezone(&Local).format("%H:%M:%S"),
                 a.kind,
-                a.detail
+                alert_detail(&a.kind, &a.detail)
             );
         }
+    }
+}
+
+/// A "quarantined" alert's detail is the namespace, empty for the root.
+fn alert_detail<'a>(kind: &str, detail: &'a str) -> &'a str {
+    if kind == "quarantined" {
+        ops::namespace_label(detail)
+    } else {
+        detail
     }
 }

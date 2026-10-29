@@ -10,7 +10,7 @@ use clap::Subcommand;
 use std::path::Path;
 use ultnas_core::{
     ops::{self, Actor},
-    Journal, JournalOp, NamespacePath,
+    Journal, JournalOp,
 };
 
 #[derive(Subcommand)]
@@ -25,7 +25,7 @@ pub enum IntegrityCommands {
     },
     /// Lift a namespace quarantine (requires operator confirmation)
     LiftQuarantine {
-        /// Namespace path to lift quarantine from
+        /// Namespace path to lift quarantine from ("(root)" for the root namespace)
         namespace: String,
         /// Skip confirmation prompt
         #[arg(long)]
@@ -95,7 +95,7 @@ fn cmd_status(vault_root: &Path) -> Result<()> {
             active_quarantines
         );
         for ns in &quarantined {
-            println!("     {}", ns);
+            println!("     {}", ops::namespace_label(ns));
         }
         println!("   Run `ultnas integrity violations` to inspect the journal.");
         println!("   Run `ultnas integrity lift-quarantine <namespace>` to unquarantine.");
@@ -164,8 +164,9 @@ fn cmd_violations(vault_root: &Path, limit: usize) -> Result<()> {
 }
 
 fn cmd_lift_quarantine(vault_root: &Path, namespace: &str, yes: bool) -> Result<()> {
-    let ns = NamespacePath::parse(namespace)?;
+    let ns = ops::parse_namespace(namespace)?;
     let namespace = ns.as_str();
+    let label = ops::namespace_label(&namespace);
     let Some(quarantined) = ops::quarantined(vault_root)? else {
         println!("No journal found — nothing is quarantined.");
         return Ok(());
@@ -173,20 +174,20 @@ fn cmd_lift_quarantine(vault_root: &Path, namespace: &str, yes: bool) -> Result<
     if !quarantined.contains(&namespace) {
         println!(
             "Namespace `{}` is not quarantined — nothing to lift.",
-            namespace
+            label
         );
         if !quarantined.is_empty() {
-            let list: Vec<_> = quarantined.into_iter().collect();
+            let list: Vec<&str> = quarantined
+                .iter()
+                .map(|n| ops::namespace_label(n))
+                .collect();
             println!("Currently quarantined: {}", list.join(", "));
         }
         return Ok(());
     }
 
     if !yes {
-        println!(
-            "This will lift the quarantine on namespace `{}`.",
-            namespace
-        );
+        println!("This will lift the quarantine on namespace `{}`.", label);
         println!("The IntegrityGuard will resume auto-restoring it, with violation counts reset.");
         print!("Confirm? [y/N] ");
         use std::io::{self, BufRead, Write};
@@ -201,7 +202,7 @@ fn cmd_lift_quarantine(vault_root: &Path, namespace: &str, yes: bool) -> Result<
 
     ops::lift_quarantine(vault_root, &ns, Actor::Cli)?;
 
-    println!("✓ Quarantine lift recorded for namespace `{}`.", namespace);
+    println!("✓ Quarantine lift recorded for namespace `{}`.", label);
     println!("  A running daemon applies it as soon as it sees the journal change.");
     Ok(())
 }

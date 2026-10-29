@@ -7,7 +7,8 @@ use std::{
     cell::{Cell, RefCell},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Arc,
+    sync::OnceLock,
+    time::Duration,
 };
 use ultnas_core::{ops, Journal, JournalEntry, Vault};
 
@@ -19,9 +20,19 @@ use crate::{
     Args, APP_ID,
 };
 
-/// How often the daemon's status and the journal are checked, in seconds.
+/// How often the daemon's status is checked, in seconds.
 const STATUS_EVERY: u32 = 2;
-const JOURNAL_EVERY: u32 = 1;
+/// How often the journal is checked for new entries.
+const JOURNAL_EVERY: Duration = Duration::from_secs(1);
+
+/// With `ULTNAS_GUI_DEBUG` set, say on stderr what the journal watcher reads
+/// and which notifications are sent.
+fn debug(message: &str) {
+    static ON: OnceLock<bool> = OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("ULTNAS_GUI_DEBUG").is_some()) {
+        eprintln!("ultnas-gui: {message}");
+    }
+}
 
 struct App {
     app: adw::Application,
@@ -291,36 +302,46 @@ impl App {
         about.present();
     }
 
-    /// Poll the journal for new entries: notify about the ones that matter,
-    /// and reload the window when anything happened.
+    /// Watch the journal for new entries: notify about the ones that
+    /// matter, and reload the window when anything happened.
+    ///
+    /// The polling runs on its own thread, not the shared pool the pages'
+    /// background work uses, so nothing else can hold it up.
     fn watch_journal(self: &Rc<Self>) {
-        let path = Arc::new(self.vault.join("journal.log"));
-        // Start at the current end, so past events don't pop up now.
-        let offset = Rc::new(Cell::new(
-            std::fs::metadata(&*path).map(|m| m.len()).unwrap_or(0),
-        ));
-        let busy = Rc::new(Cell::new(false));
-        let s = Rc::downgrade(self);
-        glib::timeout_add_seconds_local(JOURNAL_EVERY, move || {
-            let Some(s) = s.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            if busy.replace(true) {
-                return glib::ControlFlow::Continue;
-            }
-            let (path, start) = (path.clone(), offset.get());
-            let (offset, busy) = (offset.clone(), busy.clone());
-            background(
-                move || read_new(&path, start),
-                move |(next, entries)| {
-                    offset.set(next);
-                    busy.set(false);
+        let path = self.vault.join("journal.log");
+        let (tx, rx) = async_channel::unbounded::<Vec<JournalEntry>>();
+        let spawned = std::thread::Builder::new()
+            .name("journal-watch".into())
+            .spawn(move || {
+                // Start at the current end, so past events don't pop up now.
+                let mut offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                debug(&format!("watching {} from byte {offset}", path.display()));
+                loop {
+                    std::thread::sleep(JOURNAL_EVERY);
+                    let (next, entries) = read_new(&path, offset);
                     if !entries.is_empty() {
-                        s.on_entries(&entries);
+                        debug(&format!(
+                            "read {} new entries (bytes {offset} → {next})",
+                            entries.len()
+                        ));
                     }
-                },
-            );
-            glib::ControlFlow::Continue
+                    offset = next;
+                    // The app has quit.
+                    if !entries.is_empty() && tx.send_blocking(entries).is_err() {
+                        break;
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            eprintln!("ultnas-gui: can't watch the journal, so no notifications: {e}");
+            return;
+        }
+        let s = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            while let Ok(entries) = rx.recv().await {
+                let Some(s) = s.upgrade() else { break };
+                s.on_entries(&entries);
+            }
         });
     }
 
@@ -338,18 +359,10 @@ impl App {
                 }
                 _ => {}
             }
-            // One notification per kind and file: a repeat replaces it.
-            let id = format!(
-                "{:?}:{}",
-                notice.kind,
-                entry
-                    .path
-                    .as_deref()
-                    .map(Path::display)
-                    .map(|p| p.to_string())
-                    .unwrap_or_default()
-            );
-            self.app.send_notification(Some(&id), &n);
+            // A new notification for every event (no id to reuse): replacing
+            // one the desktop already closed can show nothing at all.
+            debug(&format!("notify: {}: {}", notice.title, notice.body));
+            self.app.send_notification(None, &n);
         }
         if let Some(w) = self.window.borrow().as_ref() {
             w.refresh();
@@ -402,6 +415,9 @@ fn read_new(path: &Path, offset: u64) -> (u64, Vec<JournalEntry>) {
             Ok(Some(tail)) => (tail.next_offset, tail.entries),
             _ => (0, vec![]),
         },
-        Err(_) => (offset, vec![]),
+        Err(e) => {
+            debug(&format!("can't read {}: {e}", path.display()));
+            (offset, vec![])
+        }
     }
 }
