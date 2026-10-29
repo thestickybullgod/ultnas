@@ -151,15 +151,13 @@ pub fn inform(parent: &adw::ApplicationWindow, heading: &str, body: &str) {
 /// The app icon, built in for when it isn't installed (e.g. `cargo run`).
 const LOGO_SVG: &[u8] = include_bytes!("../../packaging/gui/org.planetarchives.Ultnas.svg");
 
-/// Show the Ultnas logo as a status page's picture: the installed icon when
-/// the icon theme has it (crisp at any scale), else the built-in copy.
+/// Show the Ultnas logo as a status page's picture: the copy built into the
+/// app, so no icon theme can swap it for a placeholder. Only if that can't
+/// be drawn (no SVG loader) is the installed icon asked for by name.
 pub fn set_logo(page: &adw::StatusPage) {
-    let installed = gtk::gdk::Display::default()
-        .is_some_and(|d| gtk::IconTheme::for_display(&d).has_icon(crate::APP_ID));
-    if installed {
-        page.set_icon_name(Some(crate::APP_ID));
-    } else if let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_static(LOGO_SVG)) {
-        page.set_paintable(Some(&texture));
+    match gtk::gdk::Texture::from_bytes(&glib::Bytes::from_static(LOGO_SVG)) {
+        Ok(texture) => page.set_paintable(Some(&texture)),
+        Err(_) => page.set_icon_name(Some(crate::APP_ID)),
     }
 }
 
