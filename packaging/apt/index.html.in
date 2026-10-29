@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ultnas · Signed APT Repository</title>
+<meta name="description" content="Signed APT repository for Ultnas, which undoes invisible-character tampering in your text files. Latest release v@VERSION@.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Cpath d='M60 12 L98 25 V58 C98 83 81 100 60 108 C39 100 22 83 22 58 V25 Z' fill='none' stroke='%2390C1F7' stroke-width='9' stroke-linejoin='round'/%3E%3Crect x='53' y='53' width='14' height='14' fill='%23DF6E49'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=JetBrains+Mono:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #06090c;
+  --panel: #0b1117;
+  --panel-2: #0f1720;
+  --line: #1c2a38;
+  --text: #cfe3f7;
+  --dim: #7f97ad;
+  --blue: #90c1f7;
+  --orange: #df6e49;
+  --green: #5fe39a;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --stencil: "Black Ops One", "JetBrains Mono", Impact, sans-serif;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(ellipse at 50% 0%, rgba(144, 193, 247, 0.10), transparent 60%),
+    linear-gradient(rgba(144, 193, 247, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(144, 193, 247, 0.045) 1px, transparent 1px);
+  background-size: 100% 100%, 32px 32px, 32px 32px;
+  color: var(--text);
+  font: 15px/1.6 var(--mono);
+  min-height: 100vh;
+}
+/* CRT scanlines over everything; purely decorative. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px);
+  z-index: 10;
+}
+a { color: var(--blue); text-underline-offset: 3px; }
+a:hover { color: #fff; }
+.wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+
+/* Top status strip */
+.strip {
+  border-bottom: 1px solid var(--line);
+  background: rgba(11, 17, 23, 0.85);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.strip .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; padding-top: 8px; padding-bottom: 8px; }
+.live { color: var(--green); }
+.live::before {
+  content: "";
+  display: inline-block;
+  width: 8px; height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  animation: pulse 2s ease-in-out infinite;
+  vertical-align: 1px;
+}
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+/* Hero */
+.hero { display: grid; grid-template-columns: 180px 1fr; gap: 32px; align-items: center; padding: 56px 0 32px; }
+.shield { width: 180px; height: 180px; filter: drop-shadow(0 0 18px rgba(144, 193, 247, 0.45)); }
+.shield .pip { animation: pip 1.6s steps(2, jump-none) infinite; }
+@keyframes pip { 50% { opacity: 0.25; } }
+.eyebrow { color: var(--orange); font-size: 12px; letter-spacing: 0.3em; text-transform: uppercase; margin: 0 0 8px; }
+h1 {
+  font-family: var(--stencil);
+  font-weight: 400;
+  font-size: clamp(48px, 10vw, 96px);
+  line-height: 0.95;
+  letter-spacing: 0.06em;
+  margin: 0;
+  color: #fff;
+  text-shadow: 0 0 24px rgba(144, 193, 247, 0.35);
+}
+.expansion { color: var(--dim); margin: 12px 0 0; font-size: 14px; letter-spacing: 0.04em; }
+.tagline { margin: 16px 0 0; font-weight: 800; font-size: 18px; letter-spacing: 0.08em; color: var(--blue); }
+.tagline span { color: var(--orange); }
+
+/* Readout */
+.readout {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  background: var(--panel);
+  margin: 8px 0 48px;
+}
+.cell { padding: 16px; border-right: 1px solid var(--line); min-width: 0; }
+.cell:last-child { border-right: 0; }
+.label { display: block; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--dim); }
+.value { display: block; margin-top: 4px; font-size: 20px; font-weight: 800; color: #fff; overflow-wrap: anywhere; }
+.value.big { color: var(--blue); font-size: 28px; }
+.value a { color: inherit; text-decoration: none; }
+.value a:hover { text-decoration: underline; }
+
+/* Sections */
+section { margin: 0 0 48px; }
+h2 {
+  font-family: var(--stencil);
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: 0.12em;
+  margin: 0 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #fff;
+}
+h2::before { content: "//"; color: var(--orange); font-family: var(--mono); font-weight: 800; }
+h2::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--line), transparent); }
+p { margin: 0 0 12px; }
+.dim { color: var(--dim); }
+
+/* Steps */
+ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+ol.steps > li { counter-increment: step; position: relative; padding-left: 56px; margin-bottom: 20px; }
+ol.steps > li::before {
+  content: counter(step, decimal-leading-zero);
+  position: absolute; left: 0; top: 0;
+  width: 40px; height: 40px;
+  display: grid; place-items: center;
+  border: 1px solid var(--blue);
+  color: var(--blue);
+  font-weight: 800;
+}
+.step-title { font-weight: 800; color: #fff; display: block; margin-bottom: 8px; padding-top: 8px; }
+
+/* Terminal blocks */
+.term { border: 1px solid var(--line); background: var(--panel-2); }
+.term .bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px 6px 16px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(144, 193, 247, 0.05);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.term pre {
+  margin: 0;
+  padding: 16px;
+  overflow-x: auto;
+  font: 13.5px/1.7 var(--mono);
+  color: var(--text);
+  white-space: pre;
+}
+.term pre .p { color: var(--green); user-select: none; }
+.copy {
+  min-height: 32px;
+  padding: 4px 12px;
+  font: 600 12px var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--blue);
+  background: var(--bg);
+  border: 1px solid var(--blue);
+  cursor: pointer;
+}
+.copy:hover { background: var(--blue); color: var(--bg); }
+.copy:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+.copy.done { border-color: var(--green); color: var(--green); background: var(--bg); }
+
+/* Fingerprint */
+.fpr {
+  border: 1px dashed var(--orange);
+  padding: 16px;
+  font-size: clamp(14px, 3.4vw, 22px);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--orange);
+  overflow-wrap: anywhere;
+  margin-bottom: 12px;
+}
+
+/* Manifest table */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); background: var(--panel); }
+table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--dim); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td.pkg { color: #fff; font-weight: 800; white-space: nowrap; }
+td.ver { color: var(--blue); white-space: nowrap; }
+td.size { color: var(--dim); white-space: nowrap; }
+
+/* Threat list */
+.threats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+.threats li { border: 1px solid var(--line); background: var(--panel); padding: 12px 16px; border-left: 3px solid var(--orange); }
+.threats b { color: #fff; display: block; }
+.threats span { color: var(--dim); font-size: 13px; }
+
+footer { border-top: 1px solid var(--line); padding: 24px 0 40px; color: var(--dim); font-size: 13px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+
+@media (max-width: 720px) {
+  .hero { grid-template-columns: 1fr; justify-items: center; text-align: center; padding-top: 40px; gap: 16px; }
+  .shield { width: 132px; height: 132px; }
+  .readout { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cell:nth-child(2) { border-right: 0; }
+  .cell:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .threats { grid-template-columns: 1fr; }
+  ol.steps > li { padding-left: 0; padding-top: 52px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live::before, .shield .pip { animation: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="strip">
+  <div class="wrap">
+    <span class="live">Repository online · signed</span>
+    <span>Channel: stable / main · amd64</span>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <header class="hero">
+    <svg class="shield" viewBox="0 0 120 120" role="img" aria-label="Ultnas logo: a shield guarding lines of text">
+      <path d="M60 12 L98 25 V58 C98 83 81 100 60 108 C39 100 22 83 22 58 V25 Z" fill="none" stroke="#90C1F7" stroke-width="8" stroke-linejoin="round"/>
+      <path d="M42 44 H78 M42 60 H52 M68 60 H78 M42 76 H66" fill="none" stroke="#90C1F7" stroke-width="7" stroke-linecap="round"/>
+      <rect class="pip" x="56" y="56" width="8" height="8" fill="#DF6E49"/>
+    </svg>
+    <div>
+      <p class="eyebrow">Signed distribution node</p>
+      <h1>ULTNAS</h1>
+      <p class="expansion">Universal Linux Text Normalizer and Sanitizer</p>
+      <p class="tagline">ZERO-WIDTH. <span>ZERO TOLERANCE.</span></p>
+    </div>
+  </header>
+
+  <div class="readout" aria-label="Repository status">
+    <div class="cell">
+      <span class="label">Latest release</span>
+      <span class="value big"><a href="https://github.com/thestickybullgod/ultnas/releases/tag/v@VERSION@">v@VERSION@</a></span>
+    </div>
+    <div class="cell">
+      <span class="label">Repository built</span>
+      <span class="value">@BUILT@</span>
+    </div>
+    <div class="cell">
+      <span class="label">Targets</span>
+      <span class="value">Debian 12+ · Ubuntu 22.04+</span>
+    </div>
+    <div class="cell">
+      <span class="label">License</span>
+      <span class="value">GPL-3.0+</span>
+    </div>
+  </div>
+
+  <section aria-labelledby="mission">
+    <h2 id="mission">Mission</h2>
+    <p>Some Unicode characters render as nothing at all, or silently reorder the text around them. Written into a file, they change what it <em>means</em> without changing what anyone reviewing it <em>sees</em>.</p>
+    <p>Ultnas watches the files you choose (shell startup files, SSH and Git config, scripts, source trees, <code>/etc</code>) and undoes any write that slips these characters in, usually within about a tenth of a second.</p>
+  </section>
+
+  <section aria-labelledby="deploy">
+    <h2 id="deploy">Deployment procedure</h2>
+    <ol class="steps">
+      <li>
+        <span class="step-title">Acquire the signing key</span>
+        <div class="term"><div class="bar"><span>bash</span><button class="copy" type="button" data-target="cmd-key" aria-label="Copy the key commands">Copy</button></div><pre id="cmd-key"><span class="p">$ </span>curl -fsSL https://thestickybullgod.github.io/ultnas/ultnas.gpg | sudo tee /usr/share/keyrings/ultnas.gpg &gt;/dev/null
+<span class="p">$ </span>gpg --show-keys /usr/share/keyrings/ultnas.gpg</pre></div>
+        <p class="dim">Abort if the fingerprint differs from the one under <a href="#verify">Key verification</a>.</p>
+      </li>
+      <li>
+        <span class="step-title">Register the repository</span>
+        <div class="term"><div class="bar"><span>bash</span><button class="copy" type="button" data-target="cmd-src" aria-label="Copy the repository command">Copy</button></div><pre id="cmd-src"><span class="p">$ </span>echo "deb [signed-by=/usr/share/keyrings/ultnas.gpg] https://thestickybullgod.github.io/ultnas stable main" | sudo tee /etc/apt/sources.list.d/ultnas.list</pre></div>
+      </li>
+      <li>
+        <span class="step-title">Install</span>
+        <div class="term"><div class="bar"><span>bash</span><button class="copy" type="button" data-target="cmd-install" aria-label="Copy the install commands">Copy</button></div><pre id="cmd-install"><span class="p">$ </span>sudo apt update
+<span class="p">$ </span>sudo apt install ultnas ultnas-gui</pre></div>
+        <p class="dim"><code>ultnas-gui</code> is the desktop app; leave it off on servers. Later releases arrive with <code>sudo apt upgrade</code>.</p>
+      </li>
+      <li>
+        <span class="step-title">Arm it</span>
+        <div class="term"><div class="bar"><span>bash</span><button class="copy" type="button" data-target="cmd-arm" aria-label="Copy the setup commands">Copy</button></div><pre id="cmd-arm"><span class="p">$ </span>ultnas setup
+<span class="p">$ </span>systemctl --user enable --now ultnasd
+<span class="p">$ </span>ultnas daemon status</pre></div>
+      </li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="verify">
+    <h2 id="verify">Key verification</h2>
+    <div class="fpr">@FINGERPRINT@</div>
+    <p class="dim">Public key: <a href="ultnas.gpg">ultnas.gpg</a> (binary, for <code>/usr/share/keyrings</code>) · <a href="ultnas.asc">ultnas.asc</a> (armored).</p>
+  </section>
+
+  <section aria-labelledby="manifest">
+    <h2 id="manifest">Payload manifest</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Package</th><th scope="col">Version</th><th scope="col">Size</th><th scope="col">Function</th></tr></thead>
+        <tbody>
+@PACKAGES@
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="threats">
+    <h2 id="threats">Threats neutralized</h2>
+    <ul class="threats">
+      <li><b>Zero-width characters</b><span>U+200B and kin, hidden inside identifiers and keys</span></li>
+      <li><b>Bidi controls · "Trojan Source"</b><span>Code that reads one way and compiles another</span></li>
+      <li><b>Tag characters</b><span>Invisible text smuggled into config and <code>authorized_keys</code></span></li>
+      <li><b>Repeat offenders</b><span>Persistent writers get the file recreated from a verified copy</span></li>
+    </ul>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span><a href="https://github.com/thestickybullgod/ultnas">Source</a> · <a href="https://github.com/thestickybullgod/ultnas/releases">Releases</a> · <a href="https://github.com/thestickybullgod/ultnas/blob/main/docs/SECURITY.md">Security model</a></span>
+    <span>Ultnas · GPL-3.0-or-later · <a href="https://www.planetarchives.org/">Planet Archives</a></span>
+  </div>
+</footer>
+
+<script>
+document.querySelectorAll(".copy").forEach(function (button) {
+  button.addEventListener("click", function () {
+    var pre = document.getElementById(button.dataset.target);
+    var text = Array.prototype.map.call(pre.childNodes, function (n) {
+      return n.classList && n.classList.contains("p") ? "" : n.textContent;
+    }).join("");
+    var done = function () {
+      button.textContent = "Copied";
+      button.classList.add("done");
+      setTimeout(function () { button.textContent = "Copy"; button.classList.remove("done"); }, 1800);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () {});
+    }
+  });
+});
+</script>
+</body>
+</html>

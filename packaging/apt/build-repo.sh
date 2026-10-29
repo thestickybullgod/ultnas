@@ -12,8 +12,11 @@
 #   dists/stable/main/binary-<arch>/{Packages,Packages.gz,Release}
 #   ultnas.gpg   the public key, binary (for /usr/share/keyrings)
 #   ultnas.asc   the public key, armored
-#   index.html   install instructions
+#   index.html   the landing page, from index.html.in beside this script,
+#                with the latest version and the package list filled in
 set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
 
 debs=${1:?usage: build-repo.sh <debs-dir> <out-dir> <gpg-fingerprint>}
 out=${2:?usage: build-repo.sh <debs-dir> <out-dir> <gpg-fingerprint>}
@@ -77,19 +80,33 @@ gpg --batch --armor --export "$fpr" > ultnas.asc
 # Everything a browser visitor needs, and a check that signing worked.
 gpg --batch --verify "dists/$suite/InRelease" 2>/dev/null
 fp_spaced=$(echo "$fpr" | sed -E 's/(.{4})/\1 /g; s/ $//')
-cat > index.html <<EOF
-<!doctype html>
-<meta charset="utf-8">
-<title>Ultnas APT repository</title>
-<h1>Ultnas APT repository</h1>
-<p>Ultnas protects text files from invisible-character tampering.
-<a href="https://github.com/thestickybullgod/ultnas">Source and documentation</a>.</p>
-<h2>Install (Debian 12+, Ubuntu 22.04+)</h2>
-<pre>curl -fsSL https://thestickybullgod.github.io/ultnas/ultnas.gpg | sudo tee /usr/share/keyrings/ultnas.gpg &gt;/dev/null
-echo "deb [signed-by=/usr/share/keyrings/ultnas.gpg] https://thestickybullgod.github.io/ultnas stable main" | sudo tee /etc/apt/sources.list.d/ultnas.list
-sudo apt update
-sudo apt install ultnas</pre>
-<p>Signing key fingerprint: <code>$fp_spaced</code></p>
-EOF
+# The landing page. The newest version of each package goes in the
+# manifest, and ultnas's newest version is the headline release, so the page
+# follows every release without editing.
+declare -A newest=()
+for f in "pool/$component/u/ultnas"/*.deb; do
+    name=$(dpkg-deb -f "$f" Package)
+    ver=$(dpkg-deb -f "$f" Version)
+    if [ -z "${newest[$name]:-}" ] || dpkg --compare-versions "$ver" gt "$(dpkg-deb -f "${newest[$name]}" Version)"; then
+        newest[$name]=$f
+    fi
+done
+rows=""
+for name in $(printf '%s\n' "${!newest[@]}" | sort); do
+    f=${newest[$name]}
+    ver=$(dpkg-deb -f "$f" Version)
+    size=$(( ($(stat -c %s "$f") + 1023) / 1024 ))
+    desc=$(dpkg-deb -f "$f" Description | head -n 1 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+    rows+="          <tr><td class=\"pkg\">$name</td><td class=\"ver\">$ver</td><td class=\"size\">$size KiB</td><td>$desc</td></tr>"$'\n'
+done
+latest=$(dpkg-deb -f "${newest[ultnas]}" Version)
+latest=${latest%-*}   # 0.2.0-1 → 0.2.0: the release, without the package revision
+
+page=$(<"$here/index.html.in")
+page=${page//@VERSION@/"$latest"}
+page=${page//@BUILT@/"$(date -u +%Y-%m-%d)"}
+page=${page//@FINGERPRINT@/"$fp_spaced"}
+page=${page//@PACKAGES@/"${rows%$'\n'}"}
+printf '%s\n' "$page" > index.html
 
 echo "Built $out: $(ls "pool/$component/u/ultnas" | wc -l) package(s), signed by $fpr"
