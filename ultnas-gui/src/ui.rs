@@ -203,3 +203,71 @@ pub fn scrolled_column(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
         .child(&clamp)
         .build()
 }
+
+/// The app's own symbolic icons, so no icon theme can leave a blank or a
+/// placeholder (MATE's themes lack many GNOME icons). They're built into
+/// the binary and, at startup, written where GTK looks for unthemed icons.
+pub mod icons {
+    use std::{fs, path::PathBuf};
+
+    pub const OVERVIEW: &str = "ultnas-overview-symbolic";
+    pub const FOLDER: &str = "ultnas-folder-symbolic";
+    pub const PENDING: &str = "ultnas-pending-symbolic";
+    pub const OK: &str = "ultnas-ok-symbolic";
+    pub const CHANGED: &str = "ultnas-changed-symbolic";
+    pub const WARNING: &str = "ultnas-warning-symbolic";
+
+    const ALL: [(&str, &[u8]); 6] = [
+        (
+            OVERVIEW,
+            include_bytes!("../icons/ultnas-overview-symbolic.svg"),
+        ),
+        (
+            FOLDER,
+            include_bytes!("../icons/ultnas-folder-symbolic.svg"),
+        ),
+        (
+            PENDING,
+            include_bytes!("../icons/ultnas-pending-symbolic.svg"),
+        ),
+        (OK, include_bytes!("../icons/ultnas-ok-symbolic.svg")),
+        (
+            CHANGED,
+            include_bytes!("../icons/ultnas-changed-symbolic.svg"),
+        ),
+        (
+            WARNING,
+            include_bytes!("../icons/ultnas-warning-symbolic.svg"),
+        ),
+    ];
+
+    /// `$XDG_CACHE_HOME/ultnas-gui/icons`, else `~/.cache/ultnas-gui/icons`.
+    fn dir() -> Option<PathBuf> {
+        let var = |k| {
+            std::env::var_os(k)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        };
+        let cache = var("XDG_CACHE_HOME").or_else(|| var("HOME").map(|h| h.join(".cache")))?;
+        Some(cache.join("ultnas-gui").join("icons"))
+    }
+
+    /// Write the icons out (when missing or changed) and add their folder to
+    /// the icon theme's search path. Without it the app still works; it
+    /// just falls back to whatever the theme has.
+    pub fn install() {
+        let Some(dir) = dir() else { return };
+        if fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        for (name, svg) in ALL {
+            let file = dir.join(format!("{name}.svg"));
+            if fs::read(&file).ok().as_deref() != Some(svg) {
+                let _ = fs::write(&file, svg);
+            }
+        }
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::IconTheme::for_display(&display).add_search_path(&dir);
+        }
+    }
+}

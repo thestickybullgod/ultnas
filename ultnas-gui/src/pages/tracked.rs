@@ -151,7 +151,7 @@ impl Tracked {
                 subtitle.push_str(&format!(" · skipping {}", dir.exclude.join(", ")));
             }
             let row = ui::row(&self.shell.path(&dir.path), &subtitle);
-            row.add_prefix(&gtk::Image::from_icon_name("folder-symbolic"));
+            row.add_prefix(&gtk::Image::from_icon_name(ui::icons::FOLDER));
             self.add_untrack(&row, &dir.path, true);
             self.append(&row, &dir.path);
         }
@@ -515,9 +515,9 @@ fn file_subtitle(shell: &Shell, file: &TrackedFile, status: &FileStatus) -> Stri
 
 fn status_icon(status: &FileStatus) -> &'static str {
     match status {
-        FileStatus::Ok => "emblem-ok-symbolic",
-        FileStatus::Pending => "document-edit-symbolic",
-        FileStatus::Changed => "view-refresh-symbolic",
-        _ => "dialog-warning-symbolic",
+        FileStatus::Ok => ui::icons::OK,
+        FileStatus::Pending => ui::icons::PENDING,
+        FileStatus::Changed => ui::icons::CHANGED,
+        _ => ui::icons::WARNING,
     }
 }

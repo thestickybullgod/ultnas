@@ -1,6 +1,6 @@
 [package]
 name         = "ultnas-cli"
-description  = "Command-line interface for Ultnas, which protects text files from invisible-character tampering"
+description  = "Undo invisible-character tampering in your text files: CLI and daemon"
 default-run  = "ultnas"
 version.workspace = true
 edition.workspace = true

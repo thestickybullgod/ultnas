@@ -1,6 +1,6 @@
 [package]
 name         = "ultnas-gui"
-description  = "Desktop app for Ultnas, which protects text files from invisible-character tampering"
+description  = "Ultnas desktop app: protection status, tracking, approvals, alerts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -41,7 +41,7 @@ priority = "optional"
 # The app and the CLI share the vault format, so the versions must match:
 # the Debian version of the ultnas package (cargo-deb adds the "-1"
 # revision). deb.yml checks it against the ultnas package it builds.
-depends = "$auto, ultnas (= 0.2.0-1)"
+depends = "$auto, ultnas (= 0.2.1-1)"
 extended-description = """\
 The desktop side of Ultnas, which undoes writes that slip invisible Unicode \
 characters into your text files. See whether protection is running, track \

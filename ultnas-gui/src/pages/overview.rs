@@ -172,7 +172,7 @@ impl Overview {
         };
         let journal_row = ui::row("Journal", &journal);
         if j.degraded {
-            journal_row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+            journal_row.add_prefix(&gtk::Image::from_icon_name(ui::icons::WARNING));
         }
         protection.add(&journal_row);
 
@@ -230,7 +230,7 @@ impl Overview {
         for ns in &s.quarantined {
             let label = if ns.is_empty() { "(root)" } else { ns.as_str() };
             let row = ui::row(label, "Quarantined: detected and journaled, not repaired");
-            row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+            row.add_prefix(&gtk::Image::from_icon_name(ui::icons::WARNING));
             let lift = ui::row_button("Lift");
             let page = Rc::downgrade(self);
             let ns = ns.clone();

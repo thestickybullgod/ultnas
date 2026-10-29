@@ -16,7 +16,7 @@ use crate::{
     events::{self, NoticeKind},
     pages::{overview::Overview, pending::Pending, tracked::Tracked},
     settings::{self, Settings},
-    ui::{background, Shell},
+    ui::{background, icons, Shell},
     Args, APP_ID,
 };
 
@@ -90,6 +90,7 @@ pub fn run(args: Args) -> std::process::ExitCode {
 impl App {
     fn startup(self: &Rc<Self>) {
         gtk::Window::set_default_icon_name(APP_ID);
+        icons::install();
         self.add_actions();
         // Without a hold, an app with no window quits straight away.
         if self.settings.get().background || self.started_in_background {
@@ -237,11 +238,11 @@ impl App {
         let pending = Pending::new(shell.clone());
 
         let p = stack.add_titled(overview.widget(), Some("overview"), "Overview");
-        p.set_icon_name(Some("dialog-information-symbolic"));
+        p.set_icon_name(Some(icons::OVERVIEW));
         let p = stack.add_titled(tracked.widget(), Some("tracked"), "Tracked");
-        p.set_icon_name(Some("folder-symbolic"));
+        p.set_icon_name(Some(icons::FOLDER));
         let pending_page = stack.add_titled(pending.widget(), Some("pending"), "Pending");
-        pending_page.set_icon_name(Some("document-edit-symbolic"));
+        pending_page.set_icon_name(Some(icons::PENDING));
         pending.connect_count(move |n| {
             pending_page.set_badge_number(n as u32);
             pending_page.set_needs_attention(n > 0);
