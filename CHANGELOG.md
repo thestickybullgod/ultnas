@@ -9,10 +9,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-29
+
 ### Added
 - Desktop app, `ultnas-gui`, in its own `ultnas-gui` package: daemon status with start and stop, quarantines with a Lift button, tracking and untracking files and folders, a view of what each pending edit changes (invisible characters shown as `⟨U+200B⟩` markers) with Approve, and desktop notifications for stripped characters, restores, failed repairs, quarantines, and pending edits. An optional background mode keeps notifications coming with no window open, from login. Built on GTK 4.6 and libadwaita 1.1, so it runs on Ubuntu 22.04 and Debian 12
 - `ultnas_core::ops`: the track, untrack, approve, list, and lift-quarantine operations, shared by the CLI and the desktop app. Journal entries now say which one made a change ("via CLI" or "via GUI")
 - Signed APT repository at https://thestickybullgod.github.io/ultnas (key `0AB5 B2EA 07F2 0A83 504D 9ED0 3F9D D92C BF9B 17E8`), rebuilt from every release's `.deb` and verified by installing from the live address. Each release now updates it
+
+### Changed
+- License: Ultnas is now released under the GNU General Public License, version 3 or later (GPL-3.0-or-later). 0.1.0 was MIT
+- The root namespace is shown as `(root)` instead of a blank in `ultnas daemon status`, `ultnas integrity status`, and recent alerts, and `ultnas integrity lift-quarantine "(root)"` lifts it
 
 ## [0.1.0] — 2026-09-25
 
