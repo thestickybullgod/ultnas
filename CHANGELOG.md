@@ -9,6 +9,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-10-29
+
+### Fixed
+- Desktop app: the page tabs (Overview, Tracked, Pending) and the status and warning icons in its lists were blank on desktops whose icon theme lacks GNOME's symbolic icons, such as MATE. The app now ships its own icons
+- Package summaries fit on one line, so `apt show` and the repository page no longer cut them off mid-sentence
+
 ## [0.2.0] — 2026-10-29
 
 ### Added

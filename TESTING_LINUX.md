@@ -48,8 +48,8 @@ its own.
 Check the pieces are there:
 
 ```bash
-ultnas --version          # ultnas 0.2.0
-ultnasd --version         # ultnasd 0.2.0
+ultnas --version          # ultnas 0.2.1
+ultnasd --version         # ultnasd 0.2.1
 man ultnas                # the manual page (q to quit)
 ```
 
